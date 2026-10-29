@@ -1,0 +1,301 @@
+---
+title: "Age_models"
+author: "Daniel_Martín"
+date: "2026-10-28"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+# ----------------
+## Packages ##
+# ----------------
+
+```{r}
+
+library(rbacon)
+library(rintcal)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(readr)
+
+```
+
+# --------------------
+## Ade-depth models ##
+# --------------------
+
+# ------- Baiau Superior --------
+
+```{r}
+
+# Baiau Superior dating file:
+BA21_14C <- read.csv("specify your directory/BA21.csv", header = TRUE, sep = ",")
+
+# Baiau Superior depth file:
+BA21_depths <- read.table("specify your directory/BA21_depths.txt", header = FALSE)
+
+# --------- Main age-depth model -----------
+
+age_depth_BA21 <- Bacon("BA21", 
+                        coredir = "specify your directory",
+                        suggest = TRUE, 
+                        postbomb = 1, 
+                        depths.file = TRUE, 
+                        depth.unit = "cm", 
+                        age.unit = "yr", 
+                        cc = 1
+                        )
+
+# --------- Alternative age-depth model -----------
+
+BA_hiatus <- Bacon(
+  core = "BA21",
+  coredir = "specify your directory",
+  sep = ",",
+  postbomb = 1,
+  depths.file = TRUE,
+  depth.unit = "cm",
+  age.unit = "yr",
+  cc = 1,
+  plot.pdf = TRUE,
+  seed = 20260928,
+  hiatus.depths = 51,
+  runname = "_half_point_max_hiatus"
+)
+
+```
+
+# ------- Baiau Inferior --------
+
+```{r}
+
+# Baiau Inferior dating file:
+BAIN21_14C <- read.csv("specify your directory/BAIN21.csv", header = TRUE, sep = ",")
+
+# Baiau Inferior depth file:
+BAIN21_depths <- read.table("specify your directory/BAIN21_depths.txt", header  = FALSE)
+
+# --------- Main age-depth model -----------
+
+age_depth_BAIN21 <- Bacon("BAIN21", 
+                          coredir = "specify your directory", 
+                          suggest = TRUE,
+                          #postbomb = 1, 
+                          depths.file = TRUE, 
+                          depth.unit = "cm", 
+                          age.unit = "yr", 
+                          cc = 1,
+                          runname = "_v1"
+                          )
+
+# --------- Alternative age-depth model -----------
+
+BAIN_hiatus <- Bacon(
+  core = "BAIN21",
+  coredir = "specify your directory",
+  sep = ",",
+  postbomb = 1,
+  depths.file = TRUE,
+  depth.unit = "cm",
+  age.unit = "yr",
+  cc = 1,
+  plot.pdf = TRUE,
+  seed = 20260928,
+  hiatus.depths = 18.8,
+  runname = "_half_point_max_hiatus"
+)
+
+```
+
+# --------------------
+## Model comparison ##
+# --------------------
+
+# ------- Baiau Superior --------
+
+```{r}
+
+# Main age-depth model output for Baiau Superior:
+ba_main_model_output <- read.csv("Specify your directory/ba_main_model_output.csv", header = TRUE, sep = ";")
+
+# Alternative age-depth model output for Baiau Superior:
+ba_hiatus_model_output <- read.csv("Specify your directory/ba_hiatus_model_output.csv", header = TRUE, sep = ";")
+
+# Set the hiatus:
+hiatus_depth <- 51
+
+# Outputs in long format:
+ba_models_long <- bind_rows(
+  "Main model" = ba_main_model_output,
+  "Hiatus model" = ba_hiatus_model_output,
+  .id = "model"
+) %>%
+  mutate(
+    # Keep the hiatus curve disconnected across the boundary:
+    section = if_else(
+      model == "Hiatus model" & mean.depth > hiatus_depth,
+      "Below hiatus",
+      "Above hiatus"
+    ),
+    curve = interaction(model, section)
+  ) %>%
+  arrange(model, mean.depth)
+
+# Chart:
+ba_models_comparison <- ggplot(ba_models_long, aes(x = mean.depth, y = mean.age, 
+                                                   colour = model, 
+                                                   fill = model, group = curve)) +
+  geom_ribbon(
+    aes(ymin = low.age.CI, ymax = up.age.CI),
+    alpha = 0.15,
+    colour = NA
+  ) +
+  geom_line(linewidth = 0.8) +
+  geom_vline(
+    xintercept = hiatus_depth,
+    linetype = "dashed",
+    colour = "grey50"
+  ) +
+  scale_colour_manual(
+    values = c("Main model" = "#2166AC",
+               "Hiatus model" = "#B2182B")
+  ) +
+  scale_fill_manual(
+    values = c("Main model" = "#2166AC",
+               "Hiatus model" = "#B2182B")
+  ) +
+  labs(
+    title = "Baiau Superior",
+    x = "Depth (cm)",
+    y = "Age (cal yr BP)",
+    colour = NULL,
+    fill = NULL
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    aspect.ratio = 1,
+    panel.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(size = 20, face = "bold"),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 16),
+    legend.text = element_text(size = 16),
+    legend.position = "right")
+
+ba_models_comparison
+
+
+```
+
+# ------- Baiau Inferior --------
+
+```{r}
+
+# Main age-depth model output for Baiau Inferior:
+bain_main_model_output <- read.csv("Specify your directory/bain_main_model_output.csv", header = TRUE, sep = ";")
+
+# Alternative age-depth model output for Baiau Inferior:
+bain_hiatus_model_output <- read.csv("Specify your directory/bain_hiatus_model_output.csv", header = TRUE, sep = ";")
+
+# Set the hiatus:
+hiatus_depth <- 18.8
+
+# Outputs in long format:
+bain_models_long <- bind_rows(
+  "Main model" = bain_main_model_output,
+  "Hiatus model" = bain_hiatus_model_output,
+  .id = "model"
+) %>%
+  mutate(
+    # Keep the hiatus curve disconnected across the boundary:
+    section = if_else(
+      model == "Hiatus model" & mean.depth > hiatus_depth,
+      "Below hiatus",
+      "Above hiatus"
+    ),
+    curve = interaction(model, section)
+  ) %>%
+  arrange(model, mean.depth)
+
+# Chart:
+bain_models_comparison <- ggplot(bain_models_long, aes(x = mean.depth, y = mean.age, 
+                                                   colour = model, 
+                                                   fill = model, group = curve)) +
+  geom_ribbon(
+    aes(ymin = low.age.CI, ymax = up.age.CI),
+    alpha = 0.15,
+    colour = NA
+  ) +
+  geom_line(linewidth = 0.8) +
+  geom_vline(
+    xintercept = hiatus_depth,
+    linetype = "dashed",
+    colour = "grey50"
+  ) +
+  scale_colour_manual(
+    values = c("Main model" = "#2166AC",
+               "Hiatus model" = "#B2182B")
+  ) +
+  scale_fill_manual(
+    values = c("Main model" = "#2166AC",
+               "Hiatus model" = "#B2182B")
+  ) +
+  labs(
+    title = "Baiau Inferior",
+    x = "Depth (cm)",
+    y = "Age (cal yr BP)",
+    colour = NULL,
+    fill = NULL
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    aspect.ratio = 1,
+    panel.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(size = 20, face = "bold"),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 16),
+    legend.text = element_text(size = 16),
+    legend.position = "right")
+
+bain_models_comparison
+
+```
+
+# ------- Baiau Superior & Baiau Inferior --------
+
+```{r}
+
+# Set the age limits:
+age_limits <- range(
+  ba_main_model_output$low.age.CI,
+  ba_main_model_output$up.age.CI,
+  ba_hiatus_model_output$low.age.CI,
+  ba_hiatus_model_output$up.age.CI,
+  bain_main_model_output$low.age.CI,
+  bain_main_model_output$up.age.CI,
+  bain_hiatus_model_output$low.age.CI,
+  bain_hiatus_model_output$up.age.CI,
+  na.rm = TRUE
+)
+
+ba_models_comparison <- ba_models_comparison +
+  coord_cartesian(ylim = age_limits)
+
+bain_models_comparison <- bain_models_comparison +
+  coord_cartesian(ylim = age_limits)
+
+# Combine both charts:
+baiau_models_comparison <- (
+  (ba_models_comparison | bain_models_comparison) +
+    plot_layout(guides = "collect")
+) &
+  theme(legend.position = "bottom")
+
+baiau_models_comparison
+
+```

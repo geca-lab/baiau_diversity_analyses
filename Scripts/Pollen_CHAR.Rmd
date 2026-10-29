@@ -1,0 +1,638 @@
+---
+title: "Pollen_CHAR"
+author: "Daniel_Martín"
+date: "2026-07-08"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+#-------------
+# Packages
+#-------------
+
+```{r, message = FALSE}
+
+library(dplyr)
+library(tidyverse)
+library(readr)
+library(ggplot2)
+library(scales)
+library(patchwork)
+library(tidypaleo)
+
+```
+
+# --------------------------------------------
+## (micro)Charcoal Accumulation Rate (CHAR) ##
+# --------------------------------------------
+
+# ------- Baiau Superior --------
+
+```{r, CHAR calculation}
+
+# ----------------- Initial dataframes -----------------
+
+# Initial long-format data frame (raw data):
+ba_sup_raw_df <- read.csv("Specify your directory/Unified_raw_dataframes/baiau_superior_raw_unified_data_frame.csv", sep = ";")
+
+# Raw CHAR & pollen dataframe:
+raw_char_pollen_df <- read.csv("Specify your directory/Pollen_CHAR/raw_char_pollen_df.csv", sep = ";")
+
+
+# Get age and depth intervals:
+ba_depth_age <- ba_sup_raw_df %>%   # One row x sample!
+  distinct(
+    sample, .keep_all = TRUE
+  ) %>% 
+select(sample, top.depth, bottom.depth, age.interval, density) %>% 
+    group_by(sample) %>% 
+    mutate(
+    depth.interval = bottom.depth - top.depth
+  ) %>% 
+  ungroup() %>% 
+  select(-top.depth, -bottom.depth)
+
+# Combine both data frames by overlapping samples:
+raw_char_pollen_df <- raw_char_pollen_df %>% 
+  inner_join(ba_depth_age, by = "sample")
+
+# ----------- Compute CHAR -----------
+
+# CHAR = C x MAR = particles/cm2 yr 
+## MAR = mass accumulation rate = Density x SAR = g/cm2 yr;
+### SAR = sediment accumulation rate = depth interval / age interval = cm/yr
+####                                                              (Tracking environmental Change using lake Sediments; Chp.3, Smol et al 2001)
+
+# Compute CHAR, MAR and SAR:
+raw_char_all_pollen_df <- raw_char_pollen_df %>% 
+  mutate(
+    SAR = depth.interval / age.interval,
+    MAR = density * SAR,
+    CHAR = raw_char_conc * MAR
+  )
+
+```
+
+# ---------------------------------
+## Pollen, NPPs and CHAR diagram ##
+# ---------------------------------
+
+# ------- Baiau Superior --------
+
+```{r, Dataframes & pre-treatment}
+
+# ---------------- Pre-treatment ----------------
+
+# Re-organise the dataframe:
+raw_char_all_pollen_df <- raw_char_all_pollen_df %>% 
+  mutate(
+    Polypodium_other_spores = Polypodium + Other_Spore_T + Spore_M.Dryopteris_Polystichum_Polypodium  # They can be summed 
+  ) %>% 
+  select(-Coniochaetaceae_Xylariaceae, -Myriophyllum, -Rhamnus, -Urtica, -Helianthemum, -Echium, Brassicaceae, -Vitis, -Salix, -Acer, -Ilex, -Phillyrea, -Polypodium, -Other_Spore_T, -Spore_M.Dryopteris_Polystichum_Polypodium, -Aquatics)  # They are not quite abundant
+
+# ---------------- Taxa in the exact plotting order ----------------
+
+trees_vars <- c("Pinus", "Abies", "Alnus", "Betula", "Corylus", "Fagus", "Fraxinus", "Juniperus", "Quercus_deciduous", "Quercus_evergreen", "Tilia", "Ulmus")
+
+crops_vars <- c("Castanea", "Olea", "Juglans", "Cerealia", "Secale")
+
+shrubs_herbs_vars <- c("Ericaceae", "Ephedra", "Poaceae", "Amaranthaceae", "Apiaceae", "Artemisia", "Asteraceae_Cichorioideae", "Asteraceae_Asteroideae", "Plantago", "Cannabaceae", "Campanula", "Lamiaceae", "Rubiaceae", "Fabaceae", "Caryophyllaceae", "Papaveraceae", "Rumex_acetosella", "Spergularia")
+
+aquatics_vars <- c("Ranunculus", "Potentilla", "Cyperaceae", "Typha_Sparganium_T")
+
+ferns_vars <- c("Polypodium_other_spores")
+
+coprophilous_fungi_vars <- c("Sporormiella", "Cercophora", "Sordaria")
+
+taxon_order <- c(trees_vars, crops_vars, shrubs_herbs_vars, aquatics_vars, ferns_vars, coprophilous_fungi_vars)
+
+# ---------------- Compute pollen influx ----------------
+
+# Extract one row per sample from ba_sup_raw_df:
+pollen_influx_metadata <- ba_sup_raw_df %>%
+  distinct(sample, mean.age, top.depth, bottom.depth, top.age, bottom.age, age.interval, density, water.cont) %>%   # We need the density, age interval and depth interval
+  mutate(
+    depth_interval = bottom.depth - top.depth
+  ) %>%
+  arrange(mean.age)
+
+# Calculate sedimentation rate & dry mass accumulation rate:
+pollen_influx_metadata <- pollen_influx_metadata %>%
+  mutate(
+    sedimentation_rate = depth_interval / age.interval,       # SAR
+    dry_mass_accumulation_rate = density * sedimentation_rate   # MAR
+  )
+
+# Join the metadata to the pollen data frame:
+raw_char_all_pollen_df <- raw_char_all_pollen_df %>%
+  left_join(
+    pollen_influx_metadata %>%
+      select(sample, density, sedimentation_rate, dry_mass_accumulation_rate, depth_interval, age.interval),
+    by = "sample"
+  ) %>%
+  mutate(
+    Terrestrial_pollen_flux = Terrestrial_pollen_conc * dry_mass_accumulation_rate
+  )
+
+# ---------------- Prepare equally spaced sample positions ordered by age ----------------
+
+# Each sample receives equal vertical spacing:
+sample_positions <- raw_char_all_pollen_df %>%
+  distinct(sample, mean.age) %>%
+  arrange(mean.age) %>%
+  mutate(
+    y_index = row_number()
+  )
+
+# Join the positions to the full data frame: 
+plot_source_df <- raw_char_all_pollen_df %>%
+  left_join(sample_positions, by = c("sample", "mean.age")) %>%
+  arrange(y_index)
+
+# ---------------- Prepare the taxon data ----------------
+
+# This prevents alphabetical facet ordering:
+taxa_long <- plot_source_df %>%
+  select(sample, mean.age, y_index, all_of(taxon_order)) %>%
+  pivot_longer(
+    cols = all_of(taxon_order),
+    names_to = "Taxon",
+    values_to = "Value"
+  ) %>%
+  mutate(
+    Category = case_when(
+      Taxon %in% trees_vars ~ "Trees",
+      Taxon %in% crops_vars ~ "Crops",
+      Taxon %in% shrubs_herbs_vars ~ "Shrubs and herbs",
+      Taxon %in% aquatics_vars ~ "Aquatics",
+      Taxon %in% ferns_vars ~ "Ferns",
+      Taxon %in% coprophilous_fungi_vars ~ "Coprophilous fungi",
+      TRUE ~ NA_character_
+    ),
+
+    Category = factor(
+      Category,
+      levels = c(
+        "Trees",
+        "Crops",
+        "Shrubs and herbs",
+        "Aquatics",
+        "Ferns",
+        "Coprophilous fungi"
+      )
+    ),
+
+    Taxon = factor(
+      Taxon,
+      levels = taxon_order
+    )
+  )
+
+# ---------------- Create cleaner visible labels & category colours ----------------
+
+taxon_labels <- setNames(str_replace_all(taxon_order, "_", " "), taxon_order)
+
+# Override the longest and less readable names:
+taxon_labels["Quercus_deciduous"] <-"Quercus deciduous"
+taxon_labels["Quercus_evergreen"] <- "Quercus evergreen"
+taxon_labels["Asteraceae_Cichorioideae"] <- "Asteraceae Cichorioideae"
+taxon_labels["Asteraceae_Asteroideae"] <- "Asteraceae Asteroideae"
+taxon_labels["Rumex_acetosella"] <- "Rumex acetosella"
+taxon_labels["Typha_Sparganium_T"] <- "Typha/Sparganium"
+taxon_labels["Polypodium_other_spores"] <- "Polypodium and other spores"
+
+# Define the category colours:
+category_colours <- c(
+  "Trees" = "#2E7D32",
+  "Crops" = "#C70B0B",
+  "Shrubs and herbs" = "#D08C24",
+  "Aquatics" = "#3182BD",
+  "Ferns" = "#9005A4",
+  "Coprophilous fungi" = "#795548"
+)
+
+summary_colours <- c(
+  "Arboreal" = category_colours[["Trees"]],
+  "Non-arboreal" = category_colours[["Shrubs and herbs"]]
+)
+
+# ---------------- Define the age-axis labels once ----------------
+
+# Show values every 1000 years:
+age_values_to_show <- seq(from = 1000, to = 7000, by = 1000)
+
+# Show specific age values:
+age_values_to_show <- c(1000, 2000, 4000, 5000, 6000, 7000)
+
+# Convert those ages into positions along the equally spaced sampled axis:
+age_tick_df <- tibble(
+  age = age_values_to_show,
+  y_position = approx(
+    x = sample_positions$mean.age,
+    y = sample_positions$y_index,
+    xout = age_values_to_show,
+    ties = "ordered"
+  )$y
+) %>%
+  filter(!is.na(y_position))
+
+# Define:
+age_breaks <- age_tick_df$y_position
+age_labels <- scales::comma(age_tick_df$age)
+
+# ---------------- Customise the number of x-axis values ----------------
+
+# Display only 0 and maximum values (just in case):
+zero_max_breaks <- function(x) {
+
+  x <- x[is.finite(x)]
+
+  if (length(x) == 0) {
+    return(NULL)
+  }
+
+  c(
+    0,
+    max(x)
+  )
+}
+ 
+# Hide zero values to prevent overlapping:
+hide_zero_labels <- function(x) {
+  ifelse(
+    abs(x) < .Machine$double.eps^0.5,
+    "",
+    scales::label_number(
+      accuracy = 0.1,
+      trim = TRUE
+    )(x)
+  )
+}
+
+scale_x_continuous(
+  breaks = zero_max_breaks,
+  labels = hide_zero_labels,
+  expand = expansion(mult = c(0, 0.08))
+)
+
+# -----------------------------------------------------------------
+#  Stacked arboreal/non-arboreal panel
+# -----------------------------------------------------------------
+
+# Prepare the data for plotting:
+summary_df <- plot_source_df %>%
+  transmute(
+    sample,
+    mean.age,
+    y_index,
+    Arboreal,
+    Non_arboreal,
+    Total_pollen = Arboreal + Non_arboreal
+  )
+
+# Plot the summary pollen chart:
+p_summary <- ggplot(summary_df, aes(y = y_index)) +
+
+  # Complete pollen sum, shown in the non-arboreal colour
+  geom_areah(
+    aes(
+      x = Total_pollen,
+      fill = "Non-arboreal"
+    ),
+    alpha = 0.65,
+    size = 0.25,
+    na.rm = TRUE
+  ) +
+
+  # Arboreal component overlaid from zero to Arboreal
+  geom_areah(
+    aes(
+      x = Arboreal,
+      fill = "Arboreal"
+    ),
+    alpha = 0.85,
+    size = 0.25,
+    na.rm = TRUE
+  ) +
+
+  scale_fill_manual(
+    values = summary_colours,
+    breaks = c(
+      "Arboreal",
+      "Non-arboreal"
+    ),
+    name = NULL
+  ) +
+
+  scale_x_continuous(
+    limits = c(0, 100),
+    breaks = c(0, 50, 100),
+    expand = expansion(mult = c(0, 0))
+  ) +
+
+  scale_y_reverse(
+    breaks = age_breaks,
+    labels = age_labels,
+    expand = expansion(add = 0.5)
+  ) +
+
+  labs(
+    x = NULL,
+    y = "Age (cal yr BP)",
+    title = "Arboreal / Non-arboreal"
+  ) +
+
+  theme_paleo() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(angle = 45, vjust = 0, hjust = 0, size = 10),
+    axis.text.x = element_text(size = 7),
+    axis.text.y = element_text(size = 8, colour = "black"),
+    axis.ticks.y = element_line(colour = "black"),
+    axis.title = element_text(size = 10),
+    panel.grid = element_blank()
+  )
+
+p_summary
+
+# --------------------------------------------------------------
+#  Taxon plot - Root-square of each taxon's max. abund
+# --------------------------------------------------------------
+
+# Calculate the width assigned to each taxon:
+taxon_widths <- taxa_long %>%
+  group_by(Taxon) %>%
+  summarise(
+    max_abundance = max(Value, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Taxon = factor(Taxon, levels = taxon_order)
+  ) %>%
+  arrange(Taxon) %>%
+  mutate(
+    width = sqrt(max_abundance)
+  )
+
+taxon_widths
+
+# One plot per taxon:
+taxon_plots <- lapply(taxon_order, function(tx) {
+
+  taxon_dat <- taxa_long %>%
+    filter(Taxon == tx)
+
+  ggplot(
+    taxon_dat,
+    aes(
+      x = Value,
+      y = y_index,
+      fill = Category,
+      colour = Category
+    )
+  ) +
+
+    geom_areah(
+      alpha = 0.65,
+      size = 0.25,
+      na.rm = TRUE,
+      show.legend = tx == taxon_order[1]
+    ) +
+
+    geom_areah_exaggerate(
+      exaggerate_x = 3,
+      alpha = 0.22,
+      size = 0.25,
+      #linetype = "dashed",
+      na.rm = TRUE,
+      show.legend = FALSE
+    ) +
+    
+    facet_wrap(
+      vars(Taxon),
+      labeller = as_labeller(taxon_labels)
+    ) +
+
+    scale_fill_manual(
+      values = category_colours,
+      breaks = names(category_colours),
+      limits = names(category_colours),
+      name = NULL,
+      drop = FALSE
+    ) +
+
+    scale_colour_manual(
+      values = category_colours,
+      name = NULL,
+      drop = FALSE
+    ) +
+
+    scale_x_continuous(
+      breaks = zero_max_breaks,
+      labels = hide_zero_labels,
+      expand = expansion(
+        mult = c(0, 0.08)
+      )
+    ) +
+
+    scale_y_reverse(
+      breaks = age_breaks,
+      labels = rep("", length(age_breaks)),
+      expand = expansion(add = 0.5)
+    ) +
+
+    labs(
+      x = NULL,
+      y = NULL
+    ) +
+
+    guides(
+      colour = "none",
+      fill = guide_legend(
+        nrow = 1,
+        byrow = TRUE,
+        override.aes = list(alpha = 0.8)
+      )
+    ) +
+
+    theme_paleo() +
+
+    theme(
+      strip.background = element_blank(),
+      strip.text.x = element_text(angle = 45, size = 8, hjust = 0, vjust = 0, margin = margin(t = 3, b = 2)),
+      strip.clip = "off",
+      axis.text.x = element_text(size = 6),
+      axis.text.y = element_blank(),
+      axis.ticks.y = element_blank(),
+      panel.grid = element_blank(),
+      plot.margin = margin(t = 10, r = 2, b = 4, l = 2))
+})
+
+# Combine them with their calculated widths:
+p_taxa <- wrap_plots(
+  taxon_plots,
+  nrow = 1,
+  widths = taxon_widths$width,
+  guides = "collect"
+) &
+  theme(
+    legend.position = "bottom",
+    legend.justification = "center"
+  )
+
+p_taxa
+
+# -----------------------------------
+#  Pollen influx 
+# -----------------------------------
+
+# Data for plotting:
+pollen_flux_df <- plot_source_df %>%
+  transmute(
+    sample,
+    mean.age,
+    y_index,
+    Value = Terrestrial_pollen_flux
+  )
+
+# Plot:
+p_pollen_flux <- ggplot(pollen_flux_df, aes(x = Value, y = y_index)) +
+  geom_areah(
+    fill = "grey25",
+    colour = "black",
+    alpha = 0.65,
+    size = 0.3
+  ) +
+  scale_x_continuous(
+    labels = label_number(
+      scale_cut = cut_short_scale()
+    ),
+    breaks = breaks_pretty(n = 3),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  scale_y_reverse(
+    breaks = age_breaks,
+    labels = rep("", length(age_breaks)),
+    expand = expansion(add = 0.5)
+  ) +
+  labs(
+    x = NULL,
+    y = NULL,
+    title = expression(
+      paste(
+        "Terrestrial pollen influx (pollen ",
+        cm^{-2},
+        " ",
+        yr^{-1},
+        ")"
+      ))
+  ) +
+  
+  theme_paleo() +
+  theme(
+    plot.title = element_text(angle = 45, vjust = 0, hjust = 0, size = 10),
+    axis.text.x = element_text(size = 6),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title.x = element_blank(),
+    panel.grid = element_blank()
+  )
+
+p_pollen_flux
+
+# -----------------------------------------------------------------
+#  CHAR panel
+# -----------------------------------------------------------------
+
+# Data for plotting:
+char_df <- plot_source_df %>%
+  transmute(
+    sample,
+    mean.age,
+    y_index,
+    Value = CHAR
+  )
+
+# Plot:
+p_char <- ggplot(char_df, aes(x = Value, y = y_index)) +
+
+  geom_colh(
+    width = 0.7,
+    fill = "grey25",
+    na.rm = TRUE
+  ) +
+
+  scale_x_continuous(
+    breaks = breaks_pretty(n = 3),
+    labels = label_number(
+      accuracy = 1,
+      trim = TRUE
+    ),
+    guide = guide_axis(
+      check.overlap = TRUE
+    ),
+    expand = expansion(
+      mult = c(0, 0.05)
+    )
+  ) +
+
+  scale_y_reverse(
+    breaks = age_breaks,
+    labels = rep("", length(age_breaks)),
+    expand = expansion(add = 0.5)
+  ) +
+
+  labs(
+    x = NULL,
+    y = NULL,
+    title = expression(
+      paste(
+        "CHAR (particles ",
+        cm^{-2},
+      " ",
+      yr^{-1},
+      ")"
+      ))
+  ) +
+
+  theme_paleo() +
+  theme(
+    plot.title = element_text(angle = 45, vjust = 0, hjust = 0, size = 10),
+    axis.text.x = element_text(size = 6),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title.x = element_blank(),
+    panel.grid = element_blank()
+  )
+
+p_char
+
+# -----------------------------------------------------------------
+#  Combined plot
+# -----------------------------------------------------------------
+
+# Final composition with terrestrial pollen influx:
+final_pollen_char_plot <-p_summary + p_taxa + p_pollen_flux + p_char +
+  plot_layout(
+    nrow = 1,
+    widths = c(2.5, length(taxon_order), 2.2, 2.2),
+    guides = "collect"
+  ) +
+  plot_annotation(
+    title = "Baiau Superior",
+    theme = theme(
+      plot.title = element_text(
+        size = 20,
+        face = "bold",
+        hjust = 0
+      )
+    )
+  ) &
+  theme(
+    legend.position = "bottom"
+  )
+
+final_pollen_char_plot
+
+```

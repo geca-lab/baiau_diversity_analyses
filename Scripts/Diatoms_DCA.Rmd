@@ -1,0 +1,730 @@
+---
+title: "Diatoms & DCA"
+author: "Daniel_Martín"
+date: "2026-09-30"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+# ----------------
+## Packages ##
+# ----------------
+
+```{r, message = FALSE}
+
+library(tidyverse)
+library(ggplot2)
+library(tidypaleo) 
+library(patchwork) 
+library(vegan)
+
+```
+
+# -----------------------------------------
+## Combined chart: diatom diagram + DCA1 ##
+# -----------------------------------------
+
+# ------ DCA calculation -------
+
+```{r, Baiau Superior}
+
+# Initial long-format data frame (raw data):
+ba_sup_raw_df <- read.csv("Select your directory/Raw_unified_data_frames/baiau_superior_raw_unified_data_frame.csv", sep = ";")
+
+# ------------ Pre-treatment -------------
+
+# Species matrix: samples x species
+ba_spp_mtx <- ba_sup_raw_df %>%
+  filter(!is.na(Species_ID),
+         !is.na(sample),
+         !is.na(No),
+         No > 0) %>%
+  group_by(sample, Species_ID) %>%
+  summarise(No = sum(No), .groups = "drop") %>%
+  pivot_wider(
+    names_from = Species_ID,
+    values_from = No,
+    values_fill = 0
+  ) %>%
+  as.data.frame()
+
+rownames(ba_spp_mtx) <- ba_spp_mtx$sample     # 'sample' as rownames
+ba_spp_mtx$sample <- NULL                         # Remove sample column
+
+# Convert counts to relative abundances:
+ba_rel_mtx <- decostand(ba_spp_mtx, method = "total") * 100
+
+# ------------ DCA -------------
+
+# Detrended Constrained Analysis: 
+ba_dca <- decorana(ba_rel_mtx)    # Full inventory
+
+# ------------ Explore the DCA -------------
+
+# Total inertia
+ba_total_inertia <- ba_dca$totchi
+
+# Eigenvalues
+ba_eigenvalues <- ba_dca$evals
+
+# Percentage of total inertia explained
+ba_dca_variance <- tibble(
+  axis = names(ba_eigenvalues),
+  eigenvalue = as.numeric(ba_eigenvalues),
+  total_inertia = ba_total_inertia,
+  percent_inertia = 100 * eigenvalue / total_inertia
+)
+
+ba_dca_variance
+
+```
+
+```{r, Baiau Inferior}
+
+# Initial long-format data frame (raw data):
+ba_inf_raw_df <- read.csv("Select your directory/Raw_unified_data_frames/baiau_inferior_raw_unified_data_frame.csv", sep = ";")
+
+# ------------ Pre-treatment -------------
+
+# Species matrix: samples x species
+bain_spp_mtx <- ba_inf_raw_df %>%
+  filter(!is.na(Species_ID),
+         !is.na(sample),
+         !is.na(No),
+         No > 0) %>%
+  group_by(sample, Species_ID) %>%
+  summarise(No = sum(No), .groups = "drop") %>%
+  pivot_wider(
+    names_from = Species_ID,
+    values_from = No,
+    values_fill = 0
+  ) %>%
+  as.data.frame()
+
+rownames(bain_spp_mtx) <- bain_spp_mtx$sample     # 'sample' as rownames
+bain_spp_mtx$sample <- NULL                         # Remove sample column
+
+# Convert counts to relative abundances:
+bain_rel_mtx <- decostand(bain_spp_mtx, method = "total") * 100
+
+# ------------ DCA -------------
+
+# Detrended Constrained Analysis: 
+bain_dca <- decorana(bain_rel_mtx)    # Full inventory
+
+# ------------ Explore the DCA -------------
+
+# Total inertia
+bain_total_inertia <- bain_dca$totchi
+
+# Eigenvalues
+bain_eigenvalues <- bain_dca$evals
+
+# Percentage of total inertia explained
+bain_dca_variance <- tibble(
+  axis = names(bain_eigenvalues),
+  eigenvalue = as.numeric(bain_eigenvalues),
+  total_inertia = bain_total_inertia,
+  percent_inertia = 100 * eigenvalue / total_inertia
+)
+
+bain_dca_variance
+
+```
+
+# ------ Diatom diagram plus the DCA1 --------
+
+# Before the diagram
+
+```{r, Baiau Superior}
+
+# ---------- Extract species scores -----------
+
+# Species scores:
+ba_dca_species <- scores(
+  ba_dca,
+  display = "species",
+  choices = 1:4
+) %>%
+  as.data.frame() %>%
+  rownames_to_column("Species_ID")
+
+# Add abundance and occurrence information:
+ba_species_summary <- ba_rel_mtx %>%
+  as.data.frame() %>%
+  rownames_to_column("sample") %>%
+  pivot_longer(
+    cols = -sample,
+    names_to = "Species_ID",
+    values_to = "rel_abundance"
+  ) %>%
+  group_by(Species_ID) %>%
+  summarise(
+    max_abundance = max(rel_abundance, na.rm = TRUE),
+    mean_abundance = mean(rel_abundance, na.rm = TRUE),
+    occurrence = sum(rel_abundance > 0, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ba_dca_species_info <- ba_dca_species %>%
+  left_join(ba_species_summary, by = "Species_ID")        # Join DCA scores with abundance information
+
+# --------------- Define & select species candidates ------------------
+
+# Parameters:
+min_candidate_abundance <- 2  # Species must reach at least 2% in one sample
+dominant_threshold <- 5  # Dominant background taxa: max abundance >= 5%
+
+n_negative <- 5
+n_intermediate <- 5
+n_positive <- 5
+
+#1. Classify all species:
+ba_dca_species_info <- ba_dca_species_info %>%             # All species classification!
+  mutate(
+    DCA1_position = case_when(
+      DCA1 <= quantile(DCA1, 0.25, na.rm = TRUE) ~ "Negative",
+      DCA1 >= quantile(DCA1, 0.75, na.rm = TRUE) ~ "Positive",
+      TRUE ~ "Intermediate"
+    ),
+    abundance_class = case_when(
+      max_abundance >= 10 ~ "Dominant",
+      max_abundance >= 5  ~ "Abundant",
+      max_abundance >= 2  ~ "Common",
+      TRUE ~ "Low abundance"
+    )
+  )
+
+#2. Define candidates for DCA1-informed selection:
+ba_dca_species_candidates <- ba_dca_species_info %>%
+  filter(max_abundance >= min_candidate_abundance)
+
+#3. Select DCA1-informative taxa:
+ba_species_dca1_selected <- bind_rows(           # Only taxa selected because they represent the DCA1 gradient!
+  
+  # Strong negative DCA1 taxa
+  ba_dca_species_candidates %>%
+    arrange(DCA1) %>%
+    slice_head(n = n_negative) %>%
+    mutate(selection_role = "DCA1-informative",
+           DCA1_group = "Negative DCA1 end"),
+  
+  # Intermediate DCA1 taxa, prioritising abundance
+  ba_dca_species_candidates %>%
+    filter(
+      DCA1 >= quantile(DCA1, 0.40, na.rm = TRUE),
+      DCA1 <= quantile(DCA1, 0.60, na.rm = TRUE)
+    ) %>%
+    arrange(desc(max_abundance), desc(occurrence)) %>%
+    slice_head(n = n_intermediate) %>%
+    mutate(selection_role = "DCA1-informative",
+           DCA1_group = "Intermediate"),
+  
+  # Strong positive DCA1 taxa
+  ba_dca_species_candidates %>%
+    arrange(desc(DCA1)) %>%
+    slice_head(n = n_positive) %>%
+    mutate(selection_role = "DCA1-informative",
+           DCA1_group = "Positive DCA1 end")
+  
+) %>%
+  distinct(Species_ID, .keep_all = TRUE)
+
+#4. Add dominant background taxa:
+ba_species_dominant_selected <- ba_dca_species_info %>%     # Abundant taxa that were not selected by DCA1 but are important!
+  filter(
+    max_abundance >= dominant_threshold,
+    !Species_ID %in% ba_species_dca1_selected$Species_ID
+  ) %>%
+  mutate(
+    selection_role = "Dominant background",
+    DCA1_group = DCA1_position
+  )
+
+#5. Final selected species:
+ba_species_selected_final <- bind_rows(        # Final simplified list for the tidypaleo diagram!
+  ba_species_dca1_selected,
+  ba_species_dominant_selected
+) %>%
+  arrange(DCA1)
+
+ba_species_selected_final
+
+```
+
+```{r, Baiau Inferior}
+
+# ---------- Extract species scores -----------
+
+# Species scores:
+bain_dca_species <- scores(
+  bain_dca,
+  display = "species",
+  choices = 1:4
+) %>%
+  as.data.frame() %>%
+  rownames_to_column("Species_ID")
+
+# Add abundance and occurrence information:
+bain_species_summary <- bain_rel_mtx %>%
+  as.data.frame() %>%
+  rownames_to_column("sample") %>%
+  pivot_longer(
+    cols = -sample,
+    names_to = "Species_ID",
+    values_to = "rel_abundance"
+  ) %>%
+  group_by(Species_ID) %>%
+  summarise(
+    max_abundance = max(rel_abundance, na.rm = TRUE),
+    mean_abundance = mean(rel_abundance, na.rm = TRUE),
+    occurrence = sum(rel_abundance > 0, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+bain_dca_species_info <- bain_dca_species %>%     # Join DCA scores with abundance information
+  left_join(bain_species_summary, by = "Species_ID")
+
+# --------------- Define & select species candidates ------------------
+
+# Parameters:
+min_candidate_abundance <- 2  # Species must reach at least 2% in one sample
+dominant_threshold <- 5  # Dominant background taxa: max abundance >= 5%
+
+n_negative <- 5
+n_intermediate <- 5
+n_positive <- 5
+
+#1. Classify all species:
+bain_dca_species_info <- bain_dca_species_info %>%             # All species classification!
+  mutate(
+    DCA1_position = case_when(
+      DCA1 <= quantile(DCA1, 0.25, na.rm = TRUE) ~ "Negative",
+      DCA1 >= quantile(DCA1, 0.75, na.rm = TRUE) ~ "Positive",
+      TRUE ~ "Intermediate"
+    ),
+    abundance_class = case_when(
+      max_abundance >= 10 ~ "Dominant",
+      max_abundance >= 5  ~ "Abundant",
+      max_abundance >= 2  ~ "Common",
+      TRUE ~ "Low abundance"
+    )
+  )
+
+#2. Define candidates for DCA1-informed selection:
+bain_dca_species_candidates <- bain_dca_species_info %>%
+  filter(max_abundance >= min_candidate_abundance)
+
+#3. Select DCA1-informative taxa:
+bain_species_dca1_selected <- bind_rows(           # Only taxa selected because they represent the DCA1 gradient!
+  
+  # Strong negative DCA1 taxa
+  bain_dca_species_candidates %>%
+    arrange(DCA1) %>%
+    slice_head(n = n_negative) %>%
+    mutate(selection_role = "DCA1-informative",
+           DCA1_group = "Negative DCA1 end"),
+  
+  # Intermediate DCA1 taxa, prioritising abundance
+  bain_dca_species_candidates %>%
+    filter(
+      DCA1 >= quantile(DCA1, 0.40, na.rm = TRUE),
+      DCA1 <= quantile(DCA1, 0.60, na.rm = TRUE)
+    ) %>%
+    arrange(desc(max_abundance), desc(occurrence)) %>%
+    slice_head(n = n_intermediate) %>%
+    mutate(selection_role = "DCA1-informative",
+           DCA1_group = "Intermediate"),
+  
+  # Strong positive DCA1 taxa
+  bain_dca_species_candidates %>%
+    arrange(desc(DCA1)) %>%
+    slice_head(n = n_positive) %>%
+    mutate(selection_role = "DCA1-informative",
+           DCA1_group = "Positive DCA1 end")
+  
+) %>%
+  distinct(Species_ID, .keep_all = TRUE)
+
+#4. Add dominant background taxa:
+bain_species_dominant_selected <- bain_dca_species_info %>%     # Abundant taxa that were not selected by DCA1 but are important!
+  filter(
+    max_abundance >= dominant_threshold,
+    !Species_ID %in% bain_species_dca1_selected$Species_ID
+  ) %>%
+  mutate(
+    selection_role = "Dominant background",
+    DCA1_group = DCA1_position
+  )
+
+#5. Final selected species:
+bain_species_selected_final <- bind_rows(        # Final simplified list for the tidypaleo diagram!
+  bain_species_dca1_selected,
+  bain_species_dominant_selected
+) %>%
+  arrange(DCA1)
+
+bain_species_selected_final
+
+```
+
+# Combined plot
+
+```{r, Baiau Superior}
+
+# The chart have two panels: selected diatom species and DCA1. 
+
+# ---------------------------------------------
+# ---------- Define common settings -----------
+# ---------------------------------------------
+
+# Depth:
+depth_limits <- c(95.05, 0.50)
+depth_breaks <- seq(0.50, 95.05, by = 20)
+custom.depth.breaks <- seq(0.50, 95.05, by = 10)
+
+# Age:
+ba21_ages <- read.csv("Select your directory/Ages_tidypaleo/ba_ages_tidypaleo.csv", header = TRUE, sep = ";")  # Calibrated ages
+
+ba.age.model <- age_depth_model(.data = ba21_ages, #An age-depth model is necessary. 
+                         depth = ba21_ages$depth, 
+                         age = ba21_ages$mean, 
+                         age_min = ba21_ages$min, 
+                         age_max = ba21_ages$max 
+                         )
+
+age.range <- tidypaleo::predict_age(
+  ba.age.model,
+  c(0.50, 95.05)
+)
+
+age.breaks <- seq(
+  floor(min(age.range) / 500) * 500,
+  ceiling(max(age.range) / 500) * 500,
+  by = 1000
+)
+
+age.breaks <- c(0, 1000, 2000, 4000, 5000, 6000, 7000)   # Select specific ages!
+
+# -------------------------------------
+# ---------- Species panel ------------
+# -------------------------------------
+
+# Define the species order using DCA1:
+ba_species_order_dca1 <- ba_species_selected_final %>%   # Species with negative DCA1 end associated with species with positive DCA1 end
+  arrange(DCA1) %>%
+  pull(Species_ID)
+
+ba_diagram_df <- ba_sup_raw_df %>%
+  group_by(sample) %>%
+  mutate(
+    rel_abundance = No / sum(No, na.rm = TRUE) * 100
+  ) %>%
+  ungroup() %>%
+  filter(Species_ID %in% ba_species_order_dca1) %>%
+  mutate(
+    Species_ID = factor(Species_ID, levels = ba_species_order_dca1)
+  )
+
+# Species-only plot: keep depth axis on the left
+ba_species_panel <- ggplot(
+  ba_diagram_df,
+  aes(x = rel_abundance, y = mean.depth)
+) + 
+  geom_col_segsh() + 
+  scale_y_reverse(
+    name = "Depth (cm)",
+    breaks = depth_breaks,
+    limits = depth_limits,
+    expand = expansion(mult = c(0, 0))
+  ) + 
+  facet_abundanceh(
+    vars(Species_ID),
+    grouping = NULL,
+    rotate_facet_labels = 90
+  ) + 
+  labs(
+    title = "Baiau Superior", 
+    x = "Relative abundance (%)"
+  ) +
+  theme_bw() +
+  theme(
+    panel.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    strip.text.x = element_text(angle = 45, hjust = 0,vjust = 0,size = 12,face = "italic"),
+    axis.title.x = element_text(size = 13),
+    axis.title.y = element_text(size = 16),
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 9),
+    axis.text.y = element_text(size = 12),
+    plot.title = element_text(size = 20, hjust = 0.5, face = "bold")
+  )
+
+ba_species_panel
+
+# -------------------------------
+# ---------- DCA panel ----------
+# -------------------------------
+
+# Create the DCA1 panel:
+ba_dca_scores <- scores(    # Extract the site/sample scores from the DCA object
+  ba_dca,
+  display = "sites",
+  choices = 1:4
+) %>%
+  as.data.frame() %>%
+  rownames_to_column("sample")
+
+ba_dca_depth <- ba_dca_scores %>%          # Add depth information to DCA1 scores
+  mutate(sample = as.integer(sample)) %>%
+  left_join(
+    ba_sup_raw_df %>%
+      distinct(sample, mean.depth, mean.age),
+    by = "sample"
+  )
+
+# Plot panel: no y-axis labels
+ba_dca_panel_mid <- ggplot(
+  ba_dca_depth,
+  aes(x = DCA1, y = mean.depth)
+) +
+  geom_path(linewidth = 0.8) +
+  geom_point(size = 1.5, colour = "black") +
+  geom_vline(
+    xintercept = 0,
+    linewidth = 0.3,
+    linetype = "dashed",
+    alpha = 0.6
+  ) +
+  scale_y_reverse(
+    breaks = depth_breaks,
+    limits = depth_limits,
+    expand = expansion(mult = c(0, 0))
+  ) +
+  labs(
+    title = "DCA1",
+    x = NULL,
+    y = NULL
+  ) +
+  theme_bw() +
+  theme(
+    panel.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title.x = element_text(size = 16),
+    axis.text.x = element_text(size = 9),
+    panel.border = element_rect(colour = "black", fill = NA, linewidth = 0.4),
+    plot.title = element_text(size = 16, hjust = 0.5, 
+                              face = "bold"
+                              )
+  )
+
+ba_dca_panel_mid
+
+# ---------- Combine panels -----------
+
+ba_species_panel <- ba_species_panel +
+  scale_y_depth_age(ba.age.model, 
+                    name = "Depth (cm)",
+                    age_name   = "Age (cal yr BP)",
+
+    # Primary y (depth):
+    trans        = "reverse",                     # replaces scale_y_reverse()
+    breaks       = scales::pretty_breaks(n = 12),      # major ticks every 10 cm
+
+    # Secondary y (age) – optional:
+    age_breaks   = seq(0, 7600, by = 1000)       # adjust to your range
+  )
+
+ba_species_dca_combined <- ba_species_panel | ba_dca_panel_mid    
+  
+ba_species_dca_combined <- ba_species_dca_combined +
+  plot_layout(widths = c(6, 1)) 
+
+ba_species_dca_combined
+
+```
+
+```{r, Baiau Inferior}
+
+# ---------- Define common settings -----------
+
+# Depth:
+depth_limits <- c(89.50, 1)
+depth_breaks <- seq(1, 89.50, by = 10)
+custom.depth.breaks <- seq(1, 89.50, by = 10)
+
+# Age:
+bain21_ages <- read.csv("Select your directory/Ages_tidypaleo/bain_ages_tidypaleo.csv", header = TRUE, sep = ";")  # Calibrated ages
+
+bain.age.model <- age_depth_model(.data = bain21_ages, #An age-depth model is necessary. 
+                         depth = bain21_ages$depth, 
+                         age = bain21_ages$mean, 
+                         age_min = bain21_ages$min, 
+                         age_max = bain21_ages$max 
+                         )
+
+age.range <- tidypaleo::predict_age(
+  bain.age.model,
+  c(1, 89.50)
+)
+
+age.breaks <- seq(
+  floor(min(age.range) / 500) * 500,
+  ceiling(max(age.range) / 500) * 500,
+  by = 1000
+)
+
+age.breaks <- c(0, 1000, 2000, 3000, 4000, 5000 )
+
+# ---------- Species panel ------------
+
+# Define the species order using DCA1:
+bain_species_order_dca1 <- bain_species_selected_final %>%   # Species with negative DCA1 end associated with species with positive DCA1 end
+  arrange(DCA1) %>%
+  pull(Species_ID)
+
+bain_diagram_df <- ba_inf_raw_df %>%
+  group_by(sample) %>%
+  mutate(
+    rel_abundance = No / sum(No, na.rm = TRUE) * 100
+  ) %>%
+  ungroup() %>%
+  filter(Species_ID %in% bain_species_order_dca1) %>%
+  mutate(
+    Species_ID = factor(Species_ID, levels = bain_species_order_dca1)
+  )
+
+# Species-only plot: keep depth axis on the left
+bain_species_panel <- ggplot(
+  bain_diagram_df,
+  aes(x = rel_abundance, y = mean.depth)
+) + 
+  geom_col_segsh() + 
+  scale_y_reverse(
+    name = "Depth (cm)",
+    breaks = depth_breaks,
+    limits = depth_limits,
+    expand = expansion(mult = c(0, 0))
+  ) + 
+  facet_abundanceh(
+    vars(Species_ID),
+    grouping = NULL,
+    rotate_facet_labels = 90
+  ) + 
+  labs(
+    title = "Baiau Inferior", 
+    x = "Relative abundance (%)"
+  ) +
+  theme_bw() +
+  theme(
+    panel.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    strip.text.x = element_text(angle = 45, hjust = 0,vjust = 0,size = 12,face = "italic"),
+    axis.title.x = element_text(size = 13),
+    axis.title.y = element_text(size = 16),
+    axis.text.x = element_text(angle = 90, vjust = 0, hjust = 1, size = 9),
+    axis.text.y = element_text(size = 12),
+    plot.title = element_text(size = 20, hjust = 0.5, face = "bold")
+  )
+
+bain_species_panel
+
+# Add the event:
+bain_species_panel_event <- bain_species_panel +
+  geom_hline(yintercept = c(13, 16.6), col = "red", lty = 2, alpha = 0.7)
+
+bain_species_panel_event
+
+# ---------- DCA panel -----------
+
+# Create the DCA1 panel:
+bain_dca_scores <- scores(    # Extract the site/sample scores from the DCA object
+  bain_dca,
+  display = "sites",
+  choices = 1:4
+) %>%
+  as.data.frame() %>%
+  rownames_to_column("sample")
+
+bain_dca_depth <- bain_dca_scores %>%          # Add depth information to DCA1 scores
+  mutate(sample = as.integer(sample)) %>%
+  left_join(
+    ba_inf_raw_df %>%
+      distinct(sample, mean.depth, mean.age),
+    by = "sample"
+  )
+
+# Plot panel: no y-axis labels
+bain_dca_panel_mid <- ggplot(
+  bain_dca_depth,
+  aes(x = DCA1, y = mean.depth)
+) +
+  geom_path(linewidth = 0.8) +
+  geom_point(size = 1.5, colour = "black") +
+  geom_vline(
+    xintercept = 0,
+    linewidth = 0.3,
+    linetype = "dashed",
+    alpha = 0.6
+  ) +
+  scale_y_reverse(
+    breaks = depth_breaks,
+    limits = depth_limits,
+    expand = expansion(mult = c(0, 0))
+  ) +
+  labs(
+    title = "DCA1",
+    x = NULL,
+    y = NULL
+  ) +
+  theme_bw() +
+  theme(
+    panel.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title.x = element_text(size = 16),
+    axis.text.x = element_text(size = 9),
+    panel.border = element_rect(colour = "black", fill = NA, linewidth = 0.4),
+    plot.title = element_text(size = 16, hjust = 0.5, 
+                              face = "bold"
+                              )
+  )
+
+bain_dca_panel_mid
+
+# ---------- Combine panels -----------
+
+bain_species_panel <- bain_species_panel +
+  scale_y_depth_age(bain.age.model, 
+                    name = "Depth (cm)",
+                    age_name   = "Age (cal yr BP)",
+
+    # Primary y (depth):
+    trans        = "reverse",                     # replaces scale_y_reverse()
+    breaks       = scales::pretty_breaks(n = 12),      # major ticks every 10 cm
+
+    # Secondary y (age) – optional:
+    age_breaks   = seq(0, 5700, by = 1000)       # adjust to your range
+  )
+
+bain_species_dca_combined <- bain_species_panel | bain_dca_panel_mid    
+  
+bain_species_dca_combined <- bain_species_dca_combined +
+  plot_layout(widths = c(6, 1)) 
+
+bain_species_dca_combined
+
+```
+
+

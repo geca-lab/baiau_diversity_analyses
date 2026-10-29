@@ -1,0 +1,4680 @@
+---
+title: "Equalising temporal resolution & Diversity estimates"
+author: "Daniel_Martín"
+date: "2026-10-16"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+----------------
+## Packages ##
+----------------
+
+```{r, message = FALSE}
+
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(readr)
+
+# Sample coverage & Diversity estimates:
+library(betaC) # C_target function (sample coverage).
+library(iNEXT) # Diversity estimates (q = 0, 1, 2).
+
+# Sample coverage & alpha, gamma, beta diversity (Not used):
+library(iNEXT.3D)
+library(iNEXT.beta3D)
+
+library(ggplot2)
+library(patchwork)
+library(cowplot)
+library(segmented)
+
+# Generalised Additive Models:
+library(mgcv)
+library(gratia)
+
+
+```
+
+# ------------------------------------------------------------------
+## INCLUDING THE PARACONFORMITY ##
+# ------------------------------------------------------------------
+
+# -------------------------------------
+## Set the fixed 50-yr temporal bins ##
+# -------------------------------------
+
+# ------- Baiau Superior -------
+
+# Data frame & Pre-treatment
+
+```{r}
+
+# Initial raw unified dataframe:
+baiau.sup.df <- read.csv("Select your directory/Unified_raw_dataframes/baiau_superior_raw_unified_data_frame.csv", sep = ";")
+
+#-------------------------------
+# Fixed 50yr temporal bins
+#-------------------------------
+
+# Create the sample-age table carefully:
+ba_sample_ages <- baiau.sup.df %>%
+  dplyr::distinct(sample, mean.age, top.age, bottom.age) %>% 
+  dplyr::mutate(
+    age.interval = bottom.age - top.age
+  )
+
+# How many samples above the 50 years?
+ba_sample_ages %>%
+  dplyr::filter(age.interval > 50) %>%
+  dplyr::arrange(dplyr::desc(age.interval))  
+
+# A summary of the values:
+ba_sample_ages %>%
+  dplyr::summarise(
+    n_samples = dplyr::n(),
+    n_missing = sum(is.na(age.interval)),
+    min_interval = min(age.interval, na.rm = TRUE),
+    q25_interval = quantile(age.interval, 0.25, na.rm = TRUE),
+    median_interval = median(age.interval, na.rm = TRUE),
+    mean_interval = mean(age.interval, na.rm = TRUE),
+    q75_interval = quantile(age.interval, 0.75, na.rm = TRUE),
+    max_interval = max(age.interval, na.rm = TRUE),
+    n_over_200 = sum(age.interval > 200, na.rm = TRUE)
+  )
+
+# How many years per interval?
+bin_width <- 50
+
+# Diagnose crossing 50-year intervals:
+ba_sample_ages_50 <- ba_sample_ages %>%
+  dplyr::mutate(
+    interval_mean = floor(mean.age / bin_width) * bin_width,
+    interval_top = floor(top.age / bin_width) * bin_width,
+    interval_bottom = floor(bottom.age / bin_width) * bin_width,
+    crosses_50_boundary = interval_top != interval_bottom
+  )
+
+ba_sample_ages_50 %>%
+  dplyr::summarise(
+    n_samples = dplyr::n(),
+    median_interval = median(age.interval, na.rm = TRUE),
+    mean_interval = mean(age.interval, na.rm = TRUE),
+    max_interval = max(age.interval, na.rm = TRUE),
+    n_crossing = sum(crosses_50_boundary, na.rm = TRUE),
+    prop_crossing = mean(crosses_50_boundary, na.rm = TRUE),
+    n_over_50 = sum(age.interval > 50, na.rm = TRUE)
+  )
+
+
+# Assign samples to 50-year bins by mean age: 
+ba_sample_ages_50 <- ba_sample_ages_50 %>%
+  dplyr::mutate(
+    interval_start = floor(mean.age / bin_width) * bin_width,
+    interval_end = interval_start + bin_width,
+    interval_50 = paste0(interval_start, "-", interval_end, " cal yr BP")
+  )
+
+# How many samples per interval?
+sample_distribution_50 <- ba_sample_ages_50 %>%
+  dplyr::count(interval_start, interval_end, interval_50, name = "n_samples") %>%
+  dplyr::arrange(interval_start)
+
+sample_distribution_50
+
+# Join to the long-format data frame:
+baiau.sup.df.50 <- baiau.sup.df %>%
+  dplyr::left_join(
+    ba_sample_ages_50 %>%
+      dplyr::select(sample, interval_start, interval_end, interval_50),
+    by = "sample"
+  )
+
+# Diatom counts: sum valves by interval and taxon
+ba.diatom_counts_50 <- baiau.sup.df.50 %>%
+  dplyr::group_by(interval_start, interval_end, interval_50, Species_ID) %>%
+  dplyr::summarise(
+    total_valves = sum(No, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Create the community matrix:
+ba.diatom_counts_50 <- ba.diatom_counts_50 %>%     # The main input for sample coverage & diversity estimates!
+  tidyr::pivot_wider(
+    names_from = Species_ID,
+    values_from = total_valves,
+    values_fill = 0
+  ) %>%
+  dplyr::arrange(interval_start)
+
+ba.comm_50 <- ba.diatom_counts_50 %>%
+  dplyr::select(-interval_start, -interval_end, -interval_50)
+
+```
+
+# ------- Baiau Inferior -------
+
+# Data frame & Pre-treatment
+
+```{r}
+
+# Initial raw unified dataframe:
+baiau.inf.df <- read.csv("Select your directory/Unified_raw_dataframes/baiau_inferior_raw_unified_data_frame.csv", sep = ";")
+
+#-------------------------------
+# Fixed 50yr temporal bins
+#-------------------------------
+
+# Create the sample-age table carefully:
+bain_sample_ages <- baiau.inf.df %>%
+  dplyr::distinct(sample, mean.age, top.age, bottom.age) %>% 
+  dplyr::mutate(
+    age.interval = bottom.age - top.age
+  )
+
+# How many samples above the 50 years?
+bain_sample_ages %>%
+  dplyr::filter(age.interval > 50) %>%
+  dplyr::arrange(dplyr::desc(age.interval))  
+
+# A summary of the values:
+bain_sample_ages %>%
+  dplyr::summarise(
+    n_samples = dplyr::n(),
+    n_missing = sum(is.na(age.interval)),
+    min_interval = min(age.interval, na.rm = TRUE),
+    q25_interval = quantile(age.interval, 0.25, na.rm = TRUE),
+    median_interval = median(age.interval, na.rm = TRUE),
+    mean_interval = mean(age.interval, na.rm = TRUE),
+    q75_interval = quantile(age.interval, 0.75, na.rm = TRUE),
+    max_interval = max(age.interval, na.rm = TRUE),
+    n_over_200 = sum(age.interval > 200, na.rm = TRUE)
+  )
+
+# How many years per interval?
+bin_width <- 50
+
+# Diagnose crossing 50-year intervals:
+bain_sample_ages_50 <- bain_sample_ages %>%
+  dplyr::mutate(
+    interval_mean = floor(mean.age / bin_width) * bin_width,
+    interval_top = floor(top.age / bin_width) * bin_width,
+    interval_bottom = floor(bottom.age / bin_width) * bin_width,
+    crosses_50_boundary = interval_top != interval_bottom
+  )
+
+bain_sample_ages_50 %>%
+  dplyr::summarise(
+    n_samples = dplyr::n(),
+    median_interval = median(age.interval, na.rm = TRUE),
+    mean_interval = mean(age.interval, na.rm = TRUE),
+    max_interval = max(age.interval, na.rm = TRUE),
+    n_crossing = sum(crosses_50_boundary, na.rm = TRUE),
+    prop_crossing = mean(crosses_50_boundary, na.rm = TRUE),
+    n_over_50 = sum(age.interval > 50, na.rm = TRUE)
+  )
+
+
+# Assign samples to 50-year bins by mean age: 
+bain_sample_ages_50 <- bain_sample_ages_50 %>%
+  dplyr::mutate(
+    interval_start = floor(mean.age / bin_width) * bin_width,
+    interval_end = interval_start + bin_width,
+    interval_50 = paste0(interval_start, "-", interval_end, " cal yr BP")
+  )
+
+# How many samples per interval?
+sample_distribution_50 <- bain_sample_ages_50 %>%
+  dplyr::count(interval_start, interval_end, interval_50, name = "n_samples") %>%
+  dplyr::arrange(interval_start)
+
+sample_distribution_50
+
+# Join to the long-format data frame:
+baiau.inf.df.50 <- baiau.inf.df %>%
+  dplyr::left_join(
+    bain_sample_ages_50 %>%
+      dplyr::select(sample, interval_start, interval_end, interval_50),
+    by = "sample"
+  )
+
+# Diatom counts: sum valves by interval and taxon
+bain.diatom_counts_50 <- baiau.inf.df.50 %>%
+  dplyr::group_by(interval_start, interval_end, interval_50, Species_ID) %>%
+  dplyr::summarise(
+    total_valves = sum(No, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Create the community matrix:
+bain.diatom_comm_50 <- bain.diatom_counts_50 %>%     # The main input for sample coverage & diversity estimates!
+  tidyr::pivot_wider(
+    names_from = Species_ID,
+    values_from = total_valves,
+    values_fill = 0
+  ) %>%
+  dplyr::arrange(interval_start)
+
+bain.comm_50 <- bain.diatom_comm_50 %>%
+  dplyr::select(-interval_start, -interval_end, -interval_50)
+
+```
+
+# -----------------------
+## Diversity estimates ##
+# -----------------------
+
+# ------- Baiau Superior -------
+
+# Sample coverage & diversity estimates
+
+```{r}
+
+# ---------------- Max coverage estimation ---------------------------------
+
+ba.cov <- C_target(ba.comm_50, factor = 2) #It's not recommended a factor>2. 
+
+# ---------------- Diversity indexes --------------------------------------
+
+# Transpose the matrix (required):
+ba.comm_50_t <- t(ba.comm_50) 
+
+# Diversity estimates (iNEXT package):
+ba.estimates_50 <- estimateD(ba.comm_50_t,
+                       q = c(0, 1, 2),
+                       datatype = "abundance",
+                       base = "coverage",
+                       level = 0.96, 
+                       nboot = 500, 
+                       conf = 0.95)
+
+
+#To get the qD & upper-lower confidence limits:
+ba.estimates.grouped <- subset(ba.estimates_50, select = c(1, 3:4, 6:8))
+
+#To separate the different diversity estimators and name them properly:
+ba.estimates.sep <- ba.estimates.grouped %>%
+  mutate(
+    Hill.spp.rich = case_when(
+    Order.q == 0 ~ qD,
+    TRUE ~ NA_real_
+  ),
+  Hill.spp.rich.LCL = case_when(
+    Order.q == 0 ~ qD.LCL,
+    TRUE ~ NA_real_
+  ),
+   Hill.spp.rich.UCL = case_when(
+    Order.q == 0 ~ qD.UCL,
+    TRUE ~ NA_real_
+  ),
+  exp.shannon = case_when(
+    Order.q == 1 ~ unlist(qD),
+    TRUE ~ NA_real_
+  ),
+   exp.shannon.LCL = case_when(
+    Order.q == 1 ~ qD.LCL,
+    TRUE ~ NA_real_
+  ),
+  exp.shannon.UCL = case_when(
+    Order.q == 1 ~ qD.UCL,
+    TRUE ~ NA_real_
+  ),
+  inv.simpson = case_when(
+    Order.q == 2 ~ unlist(qD),
+    TRUE ~ NA_real_
+  ),
+  inv.simpson.LCL = case_when(
+    Order.q == 2 ~ qD.LCL,
+    TRUE ~ NA_real_
+  ),
+  inv.simpson.UCL = case_when(
+    Order.q == 2 ~ qD.UCL,
+    TRUE ~ NA_real_
+  )
+) %>%
+  dplyr::select(-qD, -qD.LCL, -qD.UCL)
+
+#Removing the Order.q variable: 
+ba.estimates.sep <- ba.estimates.sep %>% dplyr::select(-Order.q)
+
+#To create the estimator's data frames, separated:
+exp.shannon.df <- ba.estimates.sep %>%
+  dplyr::select(Assemblage, Method, exp.shannon, exp.shannon.LCL, exp.shannon.UCL) %>%
+  na.omit(exp.shannon, exp.shannon.LCL, exp.shannon.UCL)
+
+simpson.df <-  ba.estimates.sep %>%
+  dplyr::select(Assemblage, Method, inv.simpson, inv.simpson.LCL, inv.simpson.UCL) %>%
+  na.omit(inv.simpson, inv.simpson.LCL, inv.simpson.UCL)
+
+richness.df <-  ba.estimates.sep %>%
+  dplyr::select(Assemblage, Method, Hill.spp.rich, Hill.spp.rich.LCL, Hill.spp.rich.UCL) %>%
+  na.omit(Hill.spp.rich, Hill.spp.rich.LCL, Hill.spp.rich.UCL)
+
+#All indexes at once:
+ba.estimates.merged <- richness.df %>% 
+  full_join(exp.shannon.df, by = c("Assemblage", "Method")) %>% 
+  full_join(simpson.df, by = c("Assemblage", "Method"))
+
+#Rename the Assemblage column as sample & customise it:
+colnames(ba.estimates.merged)[colnames(ba.estimates.merged) == "Assemblage"] <- "sample"
+
+baiau.sup.estimates.df <- ba.estimates.merged %>% 
+  dplyr::mutate(
+    sample = as.numeric(gsub("data", "", sample))
+  )
+
+# Evenness (Pielou's J):
+baiau.sup.estimates.df <- baiau.sup.estimates.df %>% 
+  group_by(sample) %>% 
+  mutate(pielou = exp.shannon/Hill.spp.rich) %>% 
+  ungroup()
+
+# Create an interval lookup table:
+interval_lookup <- baiau.sup.df.50 %>%
+  dplyr::distinct(interval_start, interval_end, interval_50) %>%  # Avoid the mismatch between the number of observations (37 vs. 162).
+  dplyr::arrange(interval_start) %>%
+  dplyr::mutate(
+    sample = dplyr::row_number(),
+    age_mid = (interval_start + interval_end) / 2,
+    age_interval = paste0(interval_start, "-", interval_end, " cal yr BP")
+  )
+
+baiau.sup.estimates.df <- baiau.sup.estimates.df %>%
+  dplyr::left_join(
+    interval_lookup,
+    by = "sample"
+  )
+
+```
+
+# ------- Baiau Inferior -------
+
+# Sample coverage & diversity estimates
+
+```{r}
+
+# ---------------- Max coverage estimation ---------------------------------
+bain.cov <- C_target(bain.comm_50, factor = 2) #It's not recommended a factor>2. 
+
+# ---------------- Diversity indexes --------------------------------------
+
+# Transpose the matrix (required):
+bain.comm_50_t <- t(bain.comm_50) 
+
+# Diversity estimates (iNEXT package):
+bain.estimates_50 <- estimateD(bain.comm_50_t,
+                       q = c(0, 1, 2),
+                       datatype = "abundance",
+                       base = "coverage",
+                       level = 0.95,  
+                       nboot = 500, 
+                       conf = 0.95)
+
+
+#To get the qD & upper-lower confidence limits:
+bain.estimates.grouped <- subset(bain.estimates_50, select = c(1, 3:4, 6:8))
+
+#To separate the different diversity estimators and name them properly:
+bain.estimates.sep <- bain.estimates.grouped %>%
+  mutate(
+    Hill.spp.rich = case_when(
+    Order.q == 0 ~ qD,
+    TRUE ~ NA_real_
+  ),
+  Hill.spp.rich.LCL = case_when(
+    Order.q == 0 ~ qD.LCL,
+    TRUE ~ NA_real_
+  ),
+   Hill.spp.rich.UCL = case_when(
+    Order.q == 0 ~ qD.UCL,
+    TRUE ~ NA_real_
+  ),
+  exp.shannon = case_when(
+    Order.q == 1 ~ unlist(qD),
+    TRUE ~ NA_real_
+  ),
+   exp.shannon.LCL = case_when(
+    Order.q == 1 ~ qD.LCL,
+    TRUE ~ NA_real_
+  ),
+  exp.shannon.UCL = case_when(
+    Order.q == 1 ~ qD.UCL,
+    TRUE ~ NA_real_
+  ),
+  inv.simpson = case_when(
+    Order.q == 2 ~ unlist(qD),
+    TRUE ~ NA_real_
+  ),
+  inv.simpson.LCL = case_when(
+    Order.q == 2 ~ qD.LCL,
+    TRUE ~ NA_real_
+  ),
+  inv.simpson.UCL = case_when(
+    Order.q == 2 ~ qD.UCL,
+    TRUE ~ NA_real_
+  )
+) %>%
+  dplyr::select(-qD, -qD.LCL, -qD.UCL)
+
+#Removing the Order.q variable: 
+bain.estimates.sep <- bain.estimates.sep %>% dplyr::select(-Order.q)
+
+#To create the estimator's data frames, separated:
+exp.shannon.df <- bain.estimates.sep %>%
+  dplyr::select(Assemblage, Method, exp.shannon, exp.shannon.LCL, exp.shannon.UCL) %>%
+  na.omit(exp.shannon, exp.shannon.LCL, exp.shannon.UCL)
+
+simpson.df <-  bain.estimates.sep %>%
+  dplyr::select(Assemblage, Method, inv.simpson, inv.simpson.LCL, inv.simpson.UCL) %>%
+  na.omit(inv.simpson, inv.simpson.LCL, inv.simpson.UCL)
+
+richness.df <-  bain.estimates.sep %>%
+  dplyr::select(Assemblage, Method, Hill.spp.rich, Hill.spp.rich.LCL, Hill.spp.rich.UCL) %>%
+  na.omit(Hill.spp.rich, Hill.spp.rich.LCL, Hill.spp.rich.UCL)
+
+#All indexes at once:
+bain.estimates.merged <- richness.df %>% 
+  full_join(exp.shannon.df, by = c("Assemblage", "Method")) %>% 
+  full_join(simpson.df, by = c("Assemblage", "Method"))
+
+#Rename the Assemblage column as sample & customise it:
+colnames(bain.estimates.merged)[colnames(bain.estimates.merged) == "Assemblage"] <- "sample"
+
+baiau.inf.estimates.df <- bain.estimates.merged %>% 
+  dplyr::mutate(
+    sample = as.numeric(gsub("data", "", sample))
+  )
+
+# Evenness (Pielou's J):
+baiau.inf.estimates.df <- baiau.inf.estimates.df %>% 
+  group_by(sample) %>% 
+  mutate(pielou = exp.shannon/Hill.spp.rich) %>% 
+  ungroup()
+
+# Create an interval lookup table:
+interval_lookup <- baiau.inf.df.50 %>%
+  dplyr::distinct(interval_start, interval_end, interval_50) %>%  # Avoid the mismatch between the number of observations (37 vs. 162).
+  dplyr::arrange(interval_start) %>%
+  dplyr::mutate(
+    sample = dplyr::row_number(),
+    age_mid = (interval_start + interval_end) / 2,
+    age_interval = paste0(interval_start, "-", interval_end, " cal yr BP")
+  )
+
+baiau.inf.estimates.df <- baiau.inf.estimates.df %>%
+  dplyr::left_join(
+    interval_lookup,
+    by = "sample"
+  )
+
+```
+
+# -------------------------------
+## Segmented vs. Linear models ##
+# -------------------------------
+
+# Homemade functions
+
+```{r}
+
+# Function for segmented model summary extraction:
+extract_segmented_summary <- function(lm_model, seg_model, metric_name) {
+  
+  bp_ci <- confint(seg_model)
+  slope_values <- slope(seg_model)$age_mid
+  aic_values <- AIC(lm_model, seg_model)
+  davies <- segmented::davies.test(lm_model, seg.Z = ~ age_mid)
+  
+  tibble::tibble(
+    metric = metric_name,
+    selected_model = "segmented",
+    breakpoint = seg_model$psi[, "Est."],
+    breakpoint_LCL = bp_ci[, "CI(95%).low"],
+    breakpoint_UCL = bp_ci[, "CI(95%).up"],
+    davies_p = davies$p.value,
+    AIC_linear = aic_values$AIC[1],
+    AIC_segmented = aic_values$AIC[2],
+    delta_AIC = aic_values$AIC[1] - aic_values$AIC[2],
+    slope1 = slope_values["slope1", "Est."],
+    slope1_LCL = slope_values["slope1", "CI(95%).l"],
+    slope1_UCL = slope_values["slope1", "CI(95%).u"],
+    slope2 = slope_values["slope2", "Est."],
+    slope2_LCL = slope_values["slope2", "CI(95%).l"],
+    slope2_UCL = slope_values["slope2", "CI(95%).u"]
+  )
+}
+
+# Function for linear model summary extraction:
+extract_linear_summary <- function(lm_model, metric_name) {
+  
+  lm_summary <- summary(lm_model)
+  coefs <- coef(lm_summary)
+  
+  tibble::tibble(
+    metric = metric_name,
+    selected_model = "linear",
+    breakpoint = NA_real_,
+    breakpoint_LCL = NA_real_,
+    breakpoint_UCL = NA_real_,
+    davies_p = NA_real_,
+    AIC_linear = AIC(lm_model),
+    AIC_segmented = NA_real_,
+    delta_AIC = NA_real_,
+    slope1 = coefs["age_mid", "Estimate"],
+    slope1_LCL = NA_real_,
+    slope1_UCL = NA_real_,
+    slope2 = NA_real_,
+    slope2_LCL = NA_real_,
+    slope2_UCL = NA_real_,
+    linear_p = coefs["age_mid", "Pr(>|t|)"],
+    r_squared = lm_summary$r.squared,
+    adj_r_squared = lm_summary$adj.r.squared
+  )
+}
+
+# Function for segmented predictions:
+make_segmented_predictions <- function(data, seg_model, response, n = 300) {
+  
+  pred_df <- data.frame(
+    age_mid = seq(
+      min(data$age_mid, na.rm = TRUE),
+      max(data$age_mid, na.rm = TRUE),
+      length.out = n
+    )
+  )
+  
+  pred_df$fit <- predict(seg_model, newdata = pred_df)
+  pred_df$response <- response
+  pred_df$breakpoint <- seg_model$psi[, "Est."]
+  
+  pred_df
+}
+
+# Function for linear predictions:
+make_linear_predictions <- function(data, lm_model, response, n = 300) {
+  
+  pred_df <- data.frame(
+    age_mid = seq(
+      min(data$age_mid, na.rm = TRUE),
+      max(data$age_mid, na.rm = TRUE),
+      length.out = n
+    )
+  )
+  
+  pred_df$fit <- predict(lm_model, newdata = pred_df)
+  pred_df$response <- response
+  
+  pred_df
+}
+
+
+```
+
+# ------- Baiau Superior -------
+
+# Fit the segmented & linear models & exploring the trends
+
+```{r}
+
+# Data frame with the diversity estimates:
+baiau.sup.estimates.df <- read.csv("Select your directory/Diversity_estimates/With_paraconformity/baiau.sup.estimates.df.csv", sep = ";")
+
+# Initial pre-visualisation:
+ggplot(baiau.sup.estimates.df, aes(x = age_mid, y = Hill.spp.rich)) +
+  geom_point() +
+  geom_smooth(method = "loess") +
+  scale_x_reverse() +
+  theme_bw() +
+  theme(aspect.ratio = 1,
+        panel.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+
+# -------------------- Linear or segmented regression? --------------------
+
+#i) --------- Species richness ---------
+
+# Fit the initial linear model:
+ba.richness.lm <- lm(Hill.spp.rich ~ age_mid, data = baiau.sup.estimates.df)
+
+# Fit the segmented model:
+ba.richness.seg <- segmented(ba.richness.lm, seg.Z = ~age_mid, psi = list(age_mid = 2000))
+
+# Model outputs:
+summary(ba.richness.seg)
+confint(ba.richness.seg)
+
+
+AIC(ba.richness.lm, ba.richness.seg)
+
+davies.test(ba.richness.lm, seg.Z = ~age_mid)
+
+slope(ba.richness.seg)
+
+#ii) --------- Exponential of Shannon diversity (H') ---------
+
+# Fit the initial linear model:
+ba.shannon.lm <- lm(exp.shannon ~ age_mid, data = baiau.sup.estimates.df)
+
+# Fit the segmented model:
+ba.shannon.seg <- segmented(ba.shannon.lm, seg.Z = ~age_mid, psi = list(age_mid = 2000))
+
+# Model outputs:
+summary(ba.shannon.seg)
+confint(ba.shannon.seg)
+
+AIC(ba.shannon.lm, ba.shannon.seg)
+
+davies.test(ba.shannon.lm, seg.Z = ~ age_mid)
+
+slope(ba.shannon.seg)
+
+#iii) --------- Evenness (Pielou's J) ---------
+
+# Fit the initial linear model:
+ba.evenness.lm <- lm(pielou ~ age_mid, data = baiau.sup.estimates.df)
+
+# Model output:
+summary(ba.evenness.lm)
+
+AIC(ba.evenness.lm)
+
+# To keep the comparison with the rest of model for documentation:
+ba.evenness.seg <- segmented(ba.evenness.lm, seg.Z = ~ age_mid, psi = list(age_mid = 2000))
+
+summary(ba.evenness.seg)
+confint(ba.evenness.seg)
+
+AIC(ba.evenness.lm, ba.evenness.seg)
+
+davies.test(ba.evenness.lm, seg.Z = ~ age_mid)
+
+slope(ba.evenness.seg)
+
+# -------------------- Baiau Superior model summary table --------------------
+
+baiau.sup.model.summary <- dplyr::bind_rows(
+  extract_segmented_summary(
+    lm_model = ba.richness.lm,
+    seg_model = ba.richness.seg,
+    metric_name = "Species richness"
+  ),
+  extract_segmented_summary(
+    lm_model = ba.shannon.lm,
+    seg_model = ba.shannon.seg,
+    metric_name = "Exponential Shannon diversity"
+  ),
+  extract_linear_summary(
+    lm_model = ba.evenness.lm,
+    metric_name = "Evenness"
+  )
+)
+
+baiau.sup.model.summary
+
+# -------------------- Plots (using ggplot) --------------------
+
+# Create predictions:
+ba.richness.pred <- make_segmented_predictions(
+  data = baiau.sup.estimates.df,
+  seg_model = ba.richness.seg,
+  response = "Hill.spp.rich"
+)
+
+ba.shannon.pred <- make_segmented_predictions(
+  data = baiau.sup.estimates.df,
+  seg_model = ba.shannon.seg,
+  response = "exp.shannon"
+)
+
+ba.evenness.pred <- make_linear_predictions(
+  data = baiau.sup.estimates.df,
+  lm_model = ba.evenness.lm,
+  response = "pielou"
+)
+
+
+plot_bain <- function(data, predictions, model, response, y_label,
+                      segmented_fit = TRUE) {
+
+  # Age range based only on Baiau Inferior
+  x_limits <- range(data$age_mid, na.rm = TRUE)
+
+  if (segmented_fit) {
+
+    # Breakpoint and its confidence interval
+    bp <- unname(model$psi[1, "Est."])
+    bp_ci <- confint(model)
+    bp_limits <- as.numeric(
+      bp_ci[1, c("CI(95%).low", "CI(95%).up")]
+    )
+
+    # Determine line type from each slope's confidence interval
+    slopes <- segmented::slope(model)$age_mid
+
+    significant <- slopes[, "CI(95%).l"] > 0 |
+                   slopes[, "CI(95%).u"] < 0
+
+    # Include the breakpoint in both segments so the lines meet
+    bp_row <- data.frame(
+      age_mid = bp,
+      fit = as.numeric(
+        predict(model, newdata = data.frame(age_mid = bp))
+      )
+    )
+
+    pred <- predictions[, c("age_mid", "fit")]
+
+    younger <- rbind(pred[pred$age_mid < bp, ], bp_row)
+    older   <- rbind(bp_row, pred[pred$age_mid > bp, ])
+
+    younger$segment <- "younger"
+    older$segment   <- "older"
+
+    younger$linetype <- if (significant[1]) "solid" else "dashed"
+    older$linetype   <- if (significant[2]) "solid" else "dashed"
+
+    predictions <- rbind(younger, older)
+
+  } else {
+
+    # Significance of the overall linear slope
+    slope_ci <- confint(model)["age_mid", ]
+    significant <- slope_ci[1] > 0 | slope_ci[2] < 0
+
+    predictions$segment <- "all"
+    predictions$linetype <- if (significant) "solid" else "dashed"
+  }
+
+  p <- ggplot(data, aes(x = age_mid, y = .data[[response]])) +
+    geom_point(size = 2.5) +
+    geom_line(
+      data = predictions,
+      aes(
+        x = age_mid,
+        y = fit,
+        linetype = linetype,
+        group = segment
+      ),
+      inherit.aes = FALSE,
+      linewidth = 1.2,
+      colour = "darkred"
+    ) +
+    scale_linetype_identity() +
+    scale_x_reverse(
+      breaks = scales::breaks_pretty(n = 5)
+    ) +
+    coord_cartesian(xlim = rev(x_limits)) +
+    labs(
+      x = "Age (cal yr BP)",
+      y = y_label
+    ) +
+    theme_bw() +
+    theme(
+      aspect.ratio = 1,
+      panel.grid = element_blank(),
+      axis.text = element_text(size = 20),
+      axis.title = element_text(size = 22)
+    )
+
+  if (segmented_fit) {
+    p <- p +
+      geom_vline(
+        xintercept = bp,
+        colour = "blue"
+      ) +
+      geom_vline(
+        xintercept = bp_limits,
+        linetype = "dotted",
+        colour = "blue",
+        linewidth = 1,
+        alpha = 0.7
+      )
+  }
+
+  p
+}
+
+ba.richness.plot <- plot_bain(
+  data = baiau.sup.estimates.df,
+  predictions = ba.richness.pred,
+  model = ba.richness.seg,
+  response = "Hill.spp.rich",
+  y_label = "Species richness"
+)
+
+ba.shannon.plot <- plot_bain(
+  data = baiau.sup.estimates.df,
+  predictions = ba.shannon.pred,
+  model = ba.shannon.seg,
+  response = "exp.shannon",
+  y_label = "Exponential Shannon diversity"
+)
+
+ba.evenness.plot <- plot_bain(
+  data = baiau.sup.estimates.df,
+  predictions = ba.evenness.pred,
+  model = ba.evenness.lm,
+  response = "pielou",
+  y_label = "Evenness",
+  segmented_fit = FALSE
+)
+
+ba.richness.plot
+ba.shannon.plot
+ba.evenness.plot
+
+ba_diversity_plots <- (ba.richness.plot | ba.shannon.plot | ba.evenness.plot) +
+  plot_annotation(
+    title = "Baiau Superior") &
+  theme(plot.title = element_text(size = 24, face = "bold", hjust = 0.05),
+        axis.title = element_text(size = 18),
+        axis.text  = element_text(size = 14))
+
+ba_diversity_plots
+
+```
+
+# ------- Baiau Inferior -------
+
+# Fit the segmented & linear models & exploring the trends
+
+```{r}
+
+# Data frame with the diversity estimates:
+baiau.inf.estimates.df <- read.csv("Select your directory/With_paraconformity/baiau.inf.estimates.df.csv", sep = ";")
+
+# Initial pre-visualisation:
+ggplot(baiau.inf.estimates.df, aes(x = age_mid, y = Hill.spp.rich)) +
+  geom_point() +
+  geom_smooth(method = "loess") +
+  scale_x_reverse() +
+  theme_bw() +
+  theme(aspect.ratio = 1,
+        panel.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+
+# -------------------- Linear or segmented regression? --------------------
+
+#i) --------- Species richness ---------
+
+# Fit the initial linear model:
+bain.richness.lm <- lm(Hill.spp.rich ~ age_mid, data = baiau.inf.estimates.df)
+
+# Fit the segmented model:
+bain.richness.seg <- segmented(bain.richness.lm, seg.Z = ~age_mid, psi = list(age_mid = 2000))
+
+# Model outputs:
+summary(bain.richness.seg)
+confint(bain.richness.seg)
+
+
+AIC(bain.richness.lm, bain.richness.seg)
+
+davies.test(bain.richness.lm, seg.Z = ~age_mid)
+
+slope(bain.richness.seg)
+
+#ii) --------- Exponential of Shannon diversity (H') ---------
+
+# Fit the initial linear model:
+bain.shannon.lm <- lm(exp.shannon ~ age_mid, data = baiau.inf.estimates.df)
+
+# Fit the segmented model:
+bain.shannon.seg <- segmented(bain.shannon.lm, seg.Z = ~age_mid, psi = list(age_mid = 2000))
+
+# Model outputs:
+summary(bain.shannon.seg)
+confint(bain.shannon.seg)
+
+AIC(bain.shannon.lm, bain.shannon.seg)
+
+davies.test(bain.shannon.lm, seg.Z = ~ age_mid)
+
+slope(bain.shannon.seg)
+
+#iii) --------- Evenness (Pielou's J) ---------
+
+# Fit the initial linear model:
+bain.evenness.lm <- lm(pielou ~ age_mid, data = baiau.inf.estimates.df)
+
+# Model output:
+summary(bain.evenness.lm)
+
+AIC(bain.evenness.lm)
+
+# To keep the comparison with the rest of model for documentation:
+bain.evenness.seg <- segmented(bain.evenness.lm, seg.Z = ~ age_mid, psi = list(age_mid = 2000))
+
+summary(bain.evenness.seg)
+confint(bain.evenness.seg)
+
+AIC(bain.evenness.lm, bain.evenness.seg)
+
+davies.test(bain.evenness.lm, seg.Z = ~ age_mid)
+
+slope(bain.evenness.seg)
+
+# -------------------- Baiau Inferior model summary table --------------------
+
+baiau.inf.model.summary <- dplyr::bind_rows(
+  extract_segmented_summary(
+    lm_model = bain.richness.lm,
+    seg_model = bain.richness.seg,
+    metric_name = "Species richness"
+  ),
+  extract_segmented_summary(
+    lm_model = bain.shannon.lm,
+    seg_model = bain.shannon.seg,
+    metric_name = "Exponential Shannon diversity"
+  ),
+  extract_linear_summary(
+    lm_model = bain.evenness.lm,
+    metric_name = "Evenness"
+  )
+)
+
+baiau.inf.model.summary
+
+# -------------------- Plots (using ggplot) --------------------
+
+# Create predictions:
+bain.richness.pred <- make_segmented_predictions(
+  data = baiau.inf.estimates.df,
+  seg_model = bain.richness.seg,
+  response = "Hill.spp.rich"
+)
+
+bain.shannon.pred <- make_segmented_predictions(
+  data = baiau.inf.estimates.df,
+  seg_model = bain.shannon.seg,
+  response = "exp.shannon"
+)
+
+bain.evenness.pred <- make_linear_predictions(
+  data = baiau.inf.estimates.df,
+  lm_model = bain.evenness.lm,
+  response = "pielou"
+)
+
+
+plot_bain <- function(data, predictions, model, response, y_label,
+                      segmented_fit = TRUE) {
+
+  # Age range based only on Baiau Inferior
+  x_limits <- range(data$age_mid, na.rm = TRUE)
+
+  if (segmented_fit) {
+
+    # Breakpoint and its confidence interval
+    bp <- unname(model$psi[1, "Est."])
+    bp_ci <- confint(model)
+    bp_limits <- as.numeric(
+      bp_ci[1, c("CI(95%).low", "CI(95%).up")]
+    )
+
+    # Determine line type from each slope's confidence interval
+    slopes <- segmented::slope(model)$age_mid
+
+    significant <- slopes[, "CI(95%).l"] > 0 |
+                   slopes[, "CI(95%).u"] < 0
+
+    # Include the breakpoint in both segments so the lines meet
+    bp_row <- data.frame(
+      age_mid = bp,
+      fit = as.numeric(
+        predict(model, newdata = data.frame(age_mid = bp))
+      )
+    )
+
+    pred <- predictions[, c("age_mid", "fit")]
+
+    younger <- rbind(pred[pred$age_mid < bp, ], bp_row)
+    older   <- rbind(bp_row, pred[pred$age_mid > bp, ])
+
+    younger$segment <- "younger"
+    older$segment   <- "older"
+
+    younger$linetype <- if (significant[1]) "solid" else "dashed"
+    older$linetype   <- if (significant[2]) "solid" else "dashed"
+
+    predictions <- rbind(younger, older)
+
+  } else {
+
+    # Significance of the overall linear slope
+    slope_ci <- confint(model)["age_mid", ]
+    significant <- slope_ci[1] > 0 | slope_ci[2] < 0
+
+    predictions$segment <- "all"
+    predictions$linetype <- if (significant) "solid" else "dashed"
+  }
+
+  p <- ggplot(data, aes(x = age_mid, y = .data[[response]])) +
+    geom_point(size = 2.5) +
+    geom_line(
+      data = predictions,
+      aes(
+        x = age_mid,
+        y = fit,
+        linetype = linetype,
+        group = segment
+      ),
+      inherit.aes = FALSE,
+      linewidth = 1.2,
+      colour = "darkred"
+    ) +
+    scale_linetype_identity() +
+    scale_x_reverse(
+      breaks = scales::breaks_pretty(n = 5)
+    ) +
+    coord_cartesian(xlim = rev(x_limits)) +
+    labs(
+      x = "Age (cal yr BP)",
+      y = y_label
+    ) +
+    theme_bw() +
+    theme(
+      aspect.ratio = 1,
+      panel.grid = element_blank(),
+      axis.text = element_text(size = 20),
+      axis.title = element_text(size = 22)
+    )
+
+  if (segmented_fit) {
+    p <- p +
+      geom_vline(
+        xintercept = bp,
+        colour = "blue"
+      ) +
+      geom_vline(
+        xintercept = bp_limits,
+        linetype = "dotted",
+        colour = "blue",
+        linewidth = 1,
+        alpha = 0.7
+      )
+  }
+
+  p
+}
+
+bain.richness.plot <- plot_bain(
+  data = baiau.inf.estimates.df,
+  predictions = bain.richness.pred,
+  model = bain.richness.seg,
+  response = "Hill.spp.rich",
+  y_label = "Species richness"
+)
+
+bain.shannon.plot <- plot_bain(
+  data = baiau.inf.estimates.df,
+  predictions = bain.shannon.pred,
+  model = bain.shannon.seg,
+  response = "exp.shannon",
+  y_label = "Exponential Shannon diversity"
+)
+
+bain.evenness.plot <- plot_bain(
+  data = baiau.inf.estimates.df,
+  predictions = bain.evenness.pred,
+  model = bain.evenness.lm,
+  response = "pielou",
+  y_label = "Evenness",
+  segmented_fit = FALSE
+)
+
+bain.richness.plot
+bain.shannon.plot
+bain.evenness.plot
+
+bain_diversity_plots <- (bain.richness.plot | bain.shannon.plot | bain.evenness.plot) +
+  plot_annotation(
+    title = "Baiau Inferior") &
+  theme(plot.title = element_text(size = 24, face = "bold", hjust = 0.05),
+        axis.title = element_text(size = 18),
+        axis.text  = element_text(size = 14))
+
+bain_diversity_plots
+
+```
+
+# -------------------------------
+## Generalised Additive Models ##
+# -------------------------------
+
+# Homemade function to evaluate k value
+
+```{r, Homemade function}
+
+# ---------------- Function to find a suitable k value ----------------
+
+evaluate_gam_k <- function(data, response, predictor, k_min = 3, k_max = 100) {    # Exclude the "weight_var" parameter from the function.
+  
+  library(mgcv)
+  
+  results <- data.frame(
+    k = integer(),
+    edf = numeric(),
+    k_index = numeric(),
+    p_value = numeric(),
+    stringsAsFactors = FALSE
+  )
+  
+  formula_base <- paste(response, "~ s(", predictor, ", bs = 'tp', k = %d)", sep = "")
+  
+  for (k_val in k_min:k_max) {
+    
+    cat("Fitting model with k =", k_val, "\n")
+    
+    model_formula <- as.formula(sprintf(formula_base, k_val))
+    
+    fit <- tryCatch(
+      gam(
+        model_formula,
+        data = data,
+        family = gaussian,
+        method = "REML"
+      ),
+      error = function(e) {
+        cat("Model failed for k =", k_val, "\n")
+        return(NULL)
+      }
+    )
+    
+    if (!is.null(fit)) {
+      
+      kcheck <- tryCatch(
+        mgcv::k.check(fit),
+        error = function(e) {
+          cat("k.check failed for k =", k_val, "\n")
+          return(NULL)
+        }
+      )
+      
+      if (!is.null(kcheck)) {
+        
+        edf_val <- sum(fit$edf)
+        k_index <- kcheck[1, "k-index"]
+        p_val <- kcheck[1, "p-value"]
+        
+        results <- rbind(
+          results,
+          data.frame(
+            k = k_val,
+            edf = edf_val,
+            k_index = k_index,
+            p_value = p_val
+          )
+        )
+        
+      } else {
+        cat("No k.check returned for k =", k_val, "\n")
+      }
+    }
+  }
+  
+  return(results)
+}
+
+# ---------------- Function to extract GAM summary information ----------------
+
+extract_gam_summary <- function(model, metric, k_used) {
+  
+  # Model summary
+  sm <- summary(model)
+  
+  # Smooth table
+  smooth_table <- as.data.frame(sm$s.table)
+  
+  # k-check table
+  k_table <- as.data.frame(mgcv::k.check(model))
+  
+  data.frame(
+    metric = metric,
+    k = k_used,
+    edf = smooth_table[1, "edf"],
+    ref_df = smooth_table[1, "Ref.df"],
+    F_value = smooth_table[1, "F"],
+    p_value = smooth_table[1, "p-value"],
+    adj_r_squared = sm$r.sq,
+    deviance_explained = sm$dev.expl,
+    REML = sm$sp.criterion,
+    scale = sm$scale,
+    n = length(model$y),
+    k_prime = k_table[1, "k'"],
+    k_index = k_table[1, "k-index"],
+    k_p_value = k_table[1, "p-value"],
+    row.names = NULL
+  )
+}
+
+```
+
+# ------- Baiau Superior -------
+
+```{r, Fit the models}
+
+# Baiau Superior data frame:
+baiau.sup.estimates.df <- read.csv("Select your directory/Diversity_estimates/With_paraconformity/baiau.sup.estimates.df.csv", sep = ";")
+
+# ------------------- Species richness --------------------
+
+# Compute all the models for choosing a suitable 'k':
+ba.richness.gam.table <- evaluate_gam_k(    # Homemade function.
+  data = baiau.sup.estimates.df,
+  response = "Hill.spp.rich",
+  predictor = "age_mid",
+  k_min = 3,
+  k_max = 100)
+
+#GAM with only one parameter:
+ba_richness_gam <- gam(Hill.spp.rich ~ s(age_mid, k = 12), 
+              data = baiau.sup.estimates.df, #Data frame.
+              family = gaussian,
+              method = "REML", #Smoothness selection (lambda). 
+              ) 
+
+summary(ba_richness_gam)
+
+acf(residuals(ba_richness_gam), main = "Autocorrelation of residuals") #Check for autocorrelation of residuals.
+
+# Check the number of basis functions & diagnostic model:
+gam.check(ba_richness_gam, rep = 500) #'mgcv' package.
+
+ba_richness_diagnostic <- appraise(ba_richness_gam, method = 'simulate') +      #'gratia' package.
+ plot_annotation(
+  title = "Baiau Superior - Species richness"
+  ) &
+  theme(
+    plot.title = element_text(size = 20, face = "bold")
+  )
+
+ba_richness_diagnostic 
+
+# ------------------- Exponential Shannon diversity --------------------
+
+# Compute all the models for choosing a suitable 'k':
+ba.shannon.gam.table <- evaluate_gam_k(          # Homemade function.
+  data = baiau.sup.estimates.df,
+  response = "exp.shannon",
+  predictor = "age_mid",
+  k_min = 3,
+  k_max = 100)
+
+#GAM with only one parameter:
+ba_shannon_gam <- gam(exp.shannon ~ s(age_mid, k = 12), 
+              data = baiau.sup.estimates.df, #Data frame.
+              family = gaussian,
+              method = "REML", #Smoothness selection (lambda). 
+              ) 
+              
+summary(ba_shannon_gam) 
+
+acf(residuals(ba_shannon_gam), main = "Autocorrelation of residuals") #Check for autocorrelation of residuals. 
+
+# Check the number of basis functions & diagnostic model:
+gam.check(ba_shannon_gam, rep = 500) #'mgcv' package.
+
+ba_shannon_diagnostic <- appraise(ba_shannon_gam, method = 'simulate') +      #'gratia' package.
+ plot_annotation(
+  title = "Baiau Superior - Exponential of Shannon diversity"
+  ) &
+  theme(
+    plot.title = element_text(size = 20, face = "bold")
+  )
+
+ba_shannon_diagnostic
+
+# ------------------- Evenness --------------------
+
+# Compute all the models for choosing a suitable 'k':
+ba.evenness.gam.table <- evaluate_gam_k(          # Homemade function.
+  data = baiau.sup.estimates.df,
+  response = "pielou",
+  predictor = "age_mid",
+  k_min = 3,
+  k_max = 100)
+
+#GAM with only one parameter:
+ba_evenness_gam <- gam(pielou ~ s(age_mid, k = 7), 
+              data = baiau.sup.estimates.df, #Data frame.
+              family = gaussian,
+              method = "REML", #Smoothness selection (lambda). 
+              ) 
+              
+summary(ba_evenness_gam) 
+
+acf(residuals(ba_evenness_gam), main = "Autocorrelation of residuals") #Check for autocorrelation of residuals.
+
+# Check the number of basis functions & diagnostic model:
+gam.check(ba_evenness_gam, rep = 500) #'mgcv' package.
+
+ba_evenness_diagnostic <- appraise(ba_evenness_gam, method = 'simulate') +      #'gratia' package.
+ plot_annotation(
+  title = "Baiau Superior - Evenness (Pielou's J)"
+  ) &
+  theme(
+    plot.title = element_text(size = 20, face = "bold")
+  )
+ba_evenness_diagnostic
+
+```
+
+```{r, GAM summary table}
+
+# Summary table:
+ba_gam_summary_table <- dplyr::bind_rows(
+  extract_gam_summary(
+    model = ba_richness_gam,
+    metric = "Species richness",
+    k_used = 12
+  ),
+  extract_gam_summary(
+    model = ba_shannon_gam,
+    metric = "Exponential Shannon diversity",
+    k_used = 12
+  ),
+  extract_gam_summary(
+    model = ba_evenness_gam,
+    metric = "Evenness",
+    k_used = 7
+  )
+)
+
+ba_gam_summary_table
+
+# Round for readability:
+ba_gam_summary_table <- ba_gam_summary_table %>%
+  dplyr::mutate(
+    dplyr::across(
+      where(is.numeric),
+      ~ round(.x, 4)
+    )
+  )
+
+ba_gam_summary_table
+
+```
+
+# ------- Baiau Inferior -------
+
+```{r, Fit the models}
+
+# Baiau Inferior data frame:
+baiau.inf.estimates.df <- read.csv("Select your directory/With_paraconformity/baiau.inf.estimates.df.csv", sep = ";")
+
+# ------------------- Species richness --------------------
+
+# Compute all the models for choosing a suitable 'k':
+bain.richness.gam.table <- evaluate_gam_k(           #  Homemade function.
+  data = baiau.inf.estimates.df,
+  response = "Hill.spp.rich",
+  predictor = "age_mid",
+  k_min = 3,
+  k_max = 100)
+
+#GAM with only one parameter:
+bain_richness_gam <- gam(Hill.spp.rich ~ s(age_mid, k = 12), 
+              data = baiau.inf.estimates.df, #Data frame.
+              family = gaussian,
+              method = "REML", #Smoothness selection (lambda). 
+              ) 
+              
+summary(bain_richness_gam) 
+
+acf(residuals(bain_richness_gam), main = "Autocorrelation of residuals") #Check for autocorrelation of residuals. 
+
+# Check the number of basis functions & diagnostic model:
+gam.check(bain_richness_gam, rep = 500) #'mgcv' package.
+
+bain_richness_diagnostic <- appraise(bain_richness_gam, method = 'simulate') +      #'gratia' package.
+ plot_annotation(
+  title = "Baiau Inferior - Species richness"
+  ) &
+  theme(
+    plot.title = element_text(size = 20, face = "bold")
+  )
+bain_richness_diagnostic
+
+# ------------------- Exponential Shannon diversity --------------------
+
+# Compute all the models for choosing a suitable 'k':
+bain.shannon.gam.table <- evaluate_gam_k( #Homemade function.
+  data = baiau.inf.estimates.df,
+  response = "exp.shannon",
+  predictor = "age_mid",
+  k_min = 3,
+  k_max = 100)
+
+#GAM with only one parameter:
+bain_shannon_gam <- gam(exp.shannon ~ s(age_mid, k = 16), 
+              data = baiau.inf.estimates.df, #Data frame.
+              family = gaussian,
+              method = "REML", #Smoothness selection (lambda). 
+              ) 
+              
+summary(bain_shannon_gam) 
+
+acf(residuals(bain_shannon_gam), main = "Autocorrelation of residuals") #Check for autocorrelation of residuals.
+
+# Check the number of basis functions & diagnostic model:
+gam.check(bain_shannon_gam, rep = 500) #'mgcv' package.
+
+bain_shannon_diagnostic <- appraise(bain_shannon_gam, method = 'simulate') +      #'gratia' package.
+ plot_annotation(
+  title = "Baiau Inferior - Exponential of Shannon diversity"
+  ) &
+  theme(
+    plot.title = element_text(size = 20, face = "bold")
+  )
+bain_shannon_diagnostic
+
+# ------------------- Evenness --------------------
+
+# Compute all the models for choosing a suitable 'k':
+bain.evenness.gam.table <- evaluate_gam_k(           # Homemade function.
+  data = baiau.inf.estimates.df,
+  response = "pielou",
+  predictor = "age_mid",
+  k_min = 3,
+  k_max = 100)
+
+#GAM with only one parameter:
+bain_evenness_gam <- gam(pielou ~ s(age_mid, k = 20), 
+              data = baiau.inf.estimates.df, #Data frame.
+              family = gaussian,
+              method = "REML", #Smoothness selection (lambda). 
+              ) 
+              
+summary(bain_evenness_gam) 
+
+acf(residuals(bain_evenness_gam), main = "Autocorrelation of residuals") #Check for autocorrelation of residuals.
+
+# Check the number of basis functions & diagnostic model:
+gam.check(bain_evenness_gam, rep = 500) #'mgcv' package.
+
+bain_evenness_diagnostic <- appraise(bain_evenness_gam, method = 'simulate') +      #'gratia' package.
+ plot_annotation(
+  title = "Baiau Inferior - Evenness (Pielou's J)"
+  ) &
+  theme(
+    plot.title = element_text(size = 20, face = "bold")
+  )
+bain_evenness_diagnostic
+
+```
+
+```{r, GAM summary table}
+
+# Summary table:
+bain_gam_summary_table <- dplyr::bind_rows(
+  extract_gam_summary(
+    model = bain_richness_gam,
+    metric = "Species richness",
+    k_used = 12
+  ),
+  extract_gam_summary(
+    model = bain_shannon_gam,
+    metric = "Exponential Shannon diversity",
+    k_used = 16
+  ),
+  extract_gam_summary(
+    model = bain_evenness_gam,
+    metric = "Evenness",
+    k_used = 20
+  )
+)
+
+bain_gam_summary_table
+
+# Round for readability:
+bain_gam_summary_table <- bain_gam_summary_table %>%
+  dplyr::mutate(
+    dplyr::across(
+      where(is.numeric),
+      ~ round(.x, 4)
+    )
+  )
+
+bain_gam_summary_table
+
+```
+
+# ----------------------------------------------------
+## Combined visualisation ##
+# ----------------------------------------------------
+
+# Homemade functions
+
+```{r}
+
+# Helper function to standardise model predictions:
+standardise_prediction_df <- function(df,
+                                      lake_name,
+                                      metric_name,
+                                      model_name,
+                                      age_col = "age_mid",
+                                      fit_col = "metric_fit",
+                                      lower_col = "metric_lower",
+                                      upper_col = "metric_upper",
+                                      se_col = "metric_se") {
+  
+  df %>%
+    dplyr::transmute(
+      lake = lake_name,
+      metric = metric_name,
+      model = model_name,
+      age_mid = .data[[age_col]],
+      fit = as.numeric(.data[[fit_col]]),
+      lower = as.numeric(.data[[lower_col]]),
+      upper = as.numeric(.data[[upper_col]]),
+      se = as.numeric(.data[[se_col]])
+    )
+}
+
+# Helper function for dual-axis rescaling:
+rescale_to_primary <- function(x, primary_range, secondary_range) {
+  (x - secondary_range[1]) / diff(secondary_range) * diff(primary_range) + primary_range[1]
+}
+
+inverse_to_secondary <- function(x, primary_range, secondary_range) {
+  (x - primary_range[1]) / diff(primary_range) * diff(secondary_range) + secondary_range[1]
+}
+
+# Plot function:
+plot_gam_segmented_dual_axis <- function(df, metric_name, lake_name,
+                                         gam_range,
+                                         seg_range,
+                                         x_limits = c(7600, 0)) {
+  
+  plot_df <- df %>%
+    filter(metric == metric_name,
+           lake == lake_name) %>%
+    mutate(
+      seg_observed_scaled = rescale_to_primary(
+        seg_observed,
+        primary_range = gam_range,
+        secondary_range = seg_range
+      ),
+      seg_fit_scaled = rescale_to_primary(
+        seg_fit,
+        primary_range = gam_range,
+        secondary_range = seg_range
+      ),
+      seg_lower_scaled = rescale_to_primary(
+        seg_lower,
+        primary_range = gam_range,
+        secondary_range = seg_range
+      ),
+      seg_upper_scaled = rescale_to_primary(
+        seg_upper,
+        primary_range = gam_range,
+        secondary_range = seg_range
+      )
+    )
+  
+  ggplot(plot_df, aes(x = age_mid)) +
+    
+    # GAM uncertainty
+    geom_ribbon(
+      aes(ymin = gam_lower, ymax = gam_upper),
+      alpha = 0.18,
+      fill = "grey60"
+    ) +
+    
+    # Segmented uncertainty, rescaled to GAM axis
+    geom_ribbon(
+      aes(ymin = seg_lower_scaled, ymax = seg_upper_scaled),
+      alpha = 0.12,
+      fill = "grey30"
+    ) +
+    
+    # GAM fitted line
+    geom_line(
+      aes(y = gam_fit),
+      linewidth = 1.1,
+      color = "black"
+    ) +
+    
+    # Segmented fitted line, rescaled
+    geom_line(
+      aes(y = seg_fit_scaled),
+      linewidth = 1.1,
+      linetype = "dashed",
+      color = "black"
+    ) +
+    
+    # GAM observed values: full points
+    geom_point(
+      aes(y = gam_observed),
+      size = 2.2,
+      alpha = 0.85,
+      shape = 16
+    ) +
+    
+    # Segmented observed values: empty points, rescaled
+    geom_point(
+      aes(y = seg_observed_scaled),
+      size = 2.3,
+      alpha = 0.85,
+      shape = 21,
+      stroke = 0.8,
+      fill = "white"
+    ) +
+    
+    scale_x_reverse(
+      limits = x_limits,
+      breaks = scales::pretty_breaks(n = 5)
+    ) +
+    
+    scale_y_continuous(
+      limits = gam_range,
+      name = "GAM estimate",
+      sec.axis = sec_axis(
+        trans = ~ inverse_to_secondary(
+          .,
+          primary_range = gam_range,
+          secondary_range = seg_range
+        ),
+        name = "Segmented estimate"
+      )
+    ) +
+    
+    labs(
+      title = lake_name,
+      x = "Age (cal yr BP)"
+    ) +
+    
+    theme_classic(base_size = 13) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      axis.title.y.left = element_text(color = "black"),
+      axis.title.y.right = element_text(color = "black")
+    )
+}
+
+```
+
+# ------- Baiau Superior & Baiau Inferior -------
+
+# Standardised combined data frame 
+
+```{r, Baiau Superior}
+
+# -------------------- Create a common age grid for Baiau Superior ------------------------
+
+# Required dataframes:
+baiau.sup.df <- read.csv("Select your directory/Unified_raw_dataframes/baiau_superior_raw_unified_data_frame.csv", sep = ";")
+baiau.sup.estimates.df <- read.csv("Select your directory/With_paraconformity/baiau.sup.estimates.df.csv", sep = ";")
+
+age_grid <- tibble(
+  age_mid = seq(
+    from = min(
+      c(
+        baiau.sup.estimates.df$age_mid,
+        baiau.sup.df$mean.age
+      ),
+      na.rm = TRUE
+    ),
+    to = max(
+      c(
+        baiau.sup.estimates.df$age_mid,
+        baiau.sup.df$mean.age
+      ),
+      na.rm = TRUE
+    ),
+    length.out = 400
+  )
+) %>%
+  mutate(
+    mean.age = age_mid
+  )
+
+# -------------------- Extract CI from the models ------------------------
+
+#Species richness:
+ba_richness_gam_pred <- predict(       #  Generalised Additive Model
+  ba_richness_gam,
+  newdata = age_grid,
+  se.fit = TRUE
+)
+
+ba_richness_gam_fit <- age_grid %>%
+  mutate(
+    metric_fit = as.numeric(ba_richness_gam_pred$fit),
+    metric_se = as.numeric(ba_richness_gam_pred$se.fit),
+    metric_lower = metric_fit - 1.96 * metric_se,
+    metric_upper = metric_fit + 1.96 * metric_se
+  )
+
+ba_richness_seg_pred <- predict(    # Segmented model
+  ba.richness.seg,
+  newdata = age_grid,
+  se.fit = TRUE
+)
+
+ba_richness_fit <- age_grid %>%
+  mutate(
+    metric_fit = as.numeric(ba_richness_seg_pred$fit),
+    metric_se = as.numeric(ba_richness_seg_pred$se.fit),
+    metric_lower = metric_fit - 1.96 * metric_se,
+    metric_upper = metric_fit + 1.96 * metric_se
+  )
+
+# Exp. Shannon diversity:
+ba_shannon_gam_pred <- predict(       #  Generalised Additive Model
+  ba_shannon_gam,
+  newdata = age_grid,
+  se.fit = TRUE
+)
+
+ba_shannon_gam_fit <- age_grid %>%
+  mutate(
+    metric_fit = as.numeric(ba_shannon_gam_pred$fit),
+    metric_se = as.numeric(ba_shannon_gam_pred$se.fit),
+    metric_lower = metric_fit - 1.96 * metric_se,
+    metric_upper = metric_fit + 1.96 * metric_se
+  )
+ 
+ba_shannon_seg_pred <- predict(        # Segmented model
+  ba.shannon.seg,
+  newdata = age_grid,
+  se.fit = TRUE
+)
+
+ba_shannon_fit <- age_grid %>%
+  mutate(
+    metric_fit = as.numeric(ba_shannon_seg_pred$fit),
+    metric_se = as.numeric(ba_shannon_seg_pred$se.fit),
+    metric_lower = metric_fit - 1.96 * metric_se,
+    metric_upper = metric_fit + 1.96 * metric_se
+  )
+
+# Evenness (Pielou's J):
+ba_evenness_gam_pred <- predict(       #  Generalised Additive Model
+  ba_evenness_gam,
+  newdata = age_grid,
+  se.fit = TRUE
+)
+
+ba_evenness_gam_fit <- age_grid %>%
+  mutate(
+    metric_fit = as.numeric(ba_evenness_gam_pred$fit),
+    metric_se = as.numeric(ba_evenness_gam_pred$se.fit),
+    metric_lower = metric_fit - 1.96 * metric_se,
+    metric_upper = metric_fit + 1.96 * metric_se
+  )
+
+ba_evenness_seg_pred <- predict(                # (Non-)Segmented model; Actually, predictions come from a linear model!
+  ba.evenness.lm,
+  newdata = age_grid,
+  se.fit = TRUE
+)
+
+ba_evenness_fit <- age_grid %>%
+  mutate(
+    metric_fit = as.numeric(ba_evenness_seg_pred$fit),
+    metric_se = as.numeric(ba_evenness_seg_pred$se.fit),
+    metric_lower = metric_fit - 1.96 * metric_se,
+    metric_upper = metric_fit + 1.96 * metric_se
+  )
+
+# -------------------- Standardise predictions -----------------------
+
+# Species richness:
+ba_richness_seg_std <- standardise_prediction_df(    # Segmented model
+  df = ba_richness_fit,
+  lake_name = "Baiau Superior",
+  metric_name = "Species richness",
+  model_name = "Segmented"
+)
+
+ba_richness_gam_std <- standardise_prediction_df(    # Generalised Additive Model
+  df = ba_richness_gam_fit,
+  lake_name = "Baiau Superior",
+  metric_name = "Species richness",
+  model_name = "GAM"
+)
+
+# Exp. Shannon diversity:
+ba_shannon_seg_std <- standardise_prediction_df(    # Segmented model
+  df = ba_shannon_fit,
+  lake_name = "Baiau Superior",
+  metric_name = "Exp.shannon",
+  model_name = "Segmented"
+)
+
+ba_shannon_gam_std <- standardise_prediction_df(    # Generalised Additive Model
+  df = ba_shannon_gam_fit,
+  lake_name = "Baiau Superior",
+  metric_name = "Exp.shannon",
+  model_name = "GAM"
+)
+
+# Evenness (Pielou's J):
+ba_evenness_seg_std <- standardise_prediction_df(    # Segmented model
+  df = ba_evenness_fit,
+  lake_name = "Baiau Superior",
+  metric_name = "Evenness",
+  model_name = "Segmented"
+)
+
+ba_evenness_gam_std <- standardise_prediction_df(    # Generalised Additive Model
+  df = ba_evenness_gam_fit,
+  lake_name = "Baiau Superior",
+  metric_name = "Evenness",
+  model_name = "GAM"
+)
+
+
+# Join the three metrics:
+ba_estimates_models <- dplyr::bind_rows(
+  ba_richness_gam_std,
+  ba_richness_seg_std,
+  ba_shannon_gam_std,
+  ba_shannon_seg_std,
+  ba_evenness_gam_std,
+  ba_evenness_seg_std
+)
+
+# -------------------- Data frame with observed values -----------------------
+
+# Species richness:
+ba_richness_obs <- baiau.sup.estimates.df %>%
+  dplyr::transmute(
+    lake = "Baiau Superior",
+    metric = "Species richness",
+    age_mid = age_mid,
+    observed = Hill.spp.rich
+  )
+
+# Exp. Shannon diversity:
+ba_shannon_obs <- baiau.sup.estimates.df %>%
+  dplyr::transmute(
+    lake = "Baiau Superior",
+    metric = "Exp.shannon",
+    age_mid = age_mid,
+    observed = exp.shannon
+  )
+
+# Evenness (Pielou's J):
+ba_evenness_obs <- baiau.sup.estimates.df %>%
+  dplyr::transmute(
+    lake = "Baiau Superior",
+    metric = "Evenness",
+    age_mid = age_mid,
+    observed = pielou
+  )
+
+# Join the observed values per metric:
+ba_estimates_obs <- dplyr::bind_rows(
+  ba_richness_obs,
+  ba_shannon_obs,
+  ba_evenness_obs
+)
+
+```
+
+```{r, Baiau Inferior}
+
+# -------------------- Create a common age grid for Baiau Inferior ------------------------
+
+# Required data frames:
+baiau.inf.df <- read.csv("Select your directory/Unified_raw_dataframes/baiau_inferior_raw_unified_data_frame.csv", sep = ";")
+baiau.inf.estimates.df <- read.csv("Select your directory/With_paraconformity/baiau.inf.estimates.df.csv", sep = ";")
+
+age_grid <- tibble(
+  age_mid = seq(
+    from = min(
+      c(
+        baiau.inf.estimates.df$age_mid,
+        baiau.inf.df$mean.age
+      ),
+      na.rm = TRUE
+    ),
+    to = max(
+      c(
+        baiau.inf.estimates.no_hiatus.df$age_mid,
+        baiau.inf.df$mean.age
+      ),
+      na.rm = TRUE
+    ),
+    length.out = 400
+  )
+) %>%
+  mutate(
+    mean.age = age_mid
+  )
+
+# -------------------- Extract CI from the models ------------------------
+
+#Species richness:
+bain_richness_gam_pred <- predict(       #  Generalised Additive Model
+  bain_richness_gam,
+  newdata = age_grid,
+  se.fit = TRUE
+)
+
+bain_richness_gam_fit <- age_grid %>%
+  mutate(
+    metric_fit = as.numeric(bain_richness_gam_pred$fit),
+    metric_se = as.numeric(bain_richness_gam_pred$se.fit),
+    metric_lower = metric_fit - 1.96 * metric_se,
+    metric_upper = metric_fit + 1.96 * metric_se
+  )
+
+bain_richness_seg_pred <- predict(    # Segmented model
+  bain.richness.seg,
+  newdata = age_grid,
+  se.fit = TRUE
+)
+
+bain_richness_fit <- age_grid %>%
+  mutate(
+    metric_fit = as.numeric(bain_richness_seg_pred$fit),
+    metric_se = as.numeric(bain_richness_seg_pred$se.fit),
+    metric_lower = metric_fit - 1.96 * metric_se,
+    metric_upper = metric_fit + 1.96 * metric_se
+  )
+
+# Exp. Shannon diversity:
+bain_shannon_gam_pred <- predict(       #  Generalised Additive Model
+  bain_shannon_gam,
+  newdata = age_grid,
+  se.fit = TRUE
+)
+
+bain_shannon_gam_fit <- age_grid %>%
+  mutate(
+    metric_fit = as.numeric(bain_shannon_gam_pred$fit),
+    metric_se = as.numeric(bain_shannon_gam_pred$se.fit),
+    metric_lower = metric_fit - 1.96 * metric_se,
+    metric_upper = metric_fit + 1.96 * metric_se
+  )
+ 
+bain_shannon_seg_pred <- predict(        # Segmented model
+  bain.shannon.seg,
+  newdata = age_grid,
+  se.fit = TRUE
+)
+
+bain_shannon_fit <- age_grid %>%
+  mutate(
+    metric_fit = as.numeric(bain_shannon_seg_pred$fit),
+    metric_se = as.numeric(bain_shannon_seg_pred$se.fit),
+    metric_lower = metric_fit - 1.96 * metric_se,
+    metric_upper = metric_fit + 1.96 * metric_se
+  )
+
+# Evenness (Pielou's J):
+bain_evenness_gam_pred <- predict(       #  Generalised Additive Model
+  bain_evenness_gam,
+  newdata = age_grid,
+  se.fit = TRUE
+)
+
+bain_evenness_gam_fit <- age_grid %>%
+  mutate(
+    metric_fit = as.numeric(bain_evenness_gam_pred$fit),
+    metric_se = as.numeric(bain_evenness_gam_pred$se.fit),
+    metric_lower = metric_fit - 1.96 * metric_se,
+    metric_upper = metric_fit + 1.96 * metric_se
+  )
+
+bain_evenness_seg_pred <- predict(                # (Non-)Segmented model; Actually, predictions come from a linear model!
+  bain.evenness.lm,
+  newdata = age_grid,
+  se.fit = TRUE
+)
+
+bain_evenness_fit <- age_grid %>%
+  mutate(
+    metric_fit = as.numeric(bain_evenness_seg_pred$fit),
+    metric_se = as.numeric(bain_evenness_seg_pred$se.fit),
+    metric_lower = metric_fit - 1.96 * metric_se,
+    metric_upper = metric_fit + 1.96 * metric_se
+  )
+
+# -------------------- Standardise predictions -----------------------
+
+# Species richness:
+bain_richness_seg_std <- standardise_prediction_df(    # Segmented model
+  df = bain_richness_fit,
+  lake_name = "Baiau Inferior",
+  metric_name = "Species richness",
+  model_name = "Segmented"
+)
+
+bain_richness_gam_std <- standardise_prediction_df(    # Generalised Additive Model
+  df = bain_richness_gam_fit,
+  lake_name = "Baiau Inferior",
+  metric_name = "Species richness",
+  model_name = "GAM"
+)
+
+# Exp. Shannon diversity:
+bain_shannon_seg_std <- standardise_prediction_df(    # Segmented model
+  df = bain_shannon_fit,
+  lake_name = "Baiau Inferior",
+  metric_name = "Exp.shannon",
+  model_name = "Segmented"
+)
+
+bain_shannon_gam_std <- standardise_prediction_df(    # Generalised Additive Model
+  df = bain_shannon_gam_fit,
+  lake_name = "Baiau Inferior",
+  metric_name = "Exp.shannon",
+  model_name = "GAM"
+)
+
+# Evenness (Pielou's J):
+bain_evenness_seg_std <- standardise_prediction_df(    # Segmented model
+  df = bain_evenness_fit,
+  lake_name = "Baiau Inferior",
+  metric_name = "Evenness",
+  model_name = "Segmented"
+)
+
+bain_evenness_gam_std <- standardise_prediction_df(    # Generalised Additive Model
+  df = bain_evenness_gam_fit,
+  lake_name = "Baiau Inferior",
+  metric_name = "Evenness",
+  model_name = "GAM"
+)
+
+
+# Join the three metrics:
+bain_estimates_models <- dplyr::bind_rows(
+  bain_richness_gam_std,
+  bain_richness_seg_std,
+  bain_shannon_gam_std,
+  bain_shannon_seg_std,
+  bain_evenness_gam_std,
+  bain_evenness_seg_std
+)
+
+# -------------------- Data frame with observed values -----------------------
+
+# Species richness:
+bain_richness_obs <- baiau.inf.estimates.df %>%
+  dplyr::transmute(
+    lake = "Baiau Inferior",
+    metric = "Species richness",
+    age_mid = age_mid,
+    observed = Hill.spp.rich
+  )
+
+# Exp. Shannon diversity:
+bain_shannon_obs <- baiau.inf.estimates.df %>%
+  dplyr::transmute(
+    lake = "Baiau Inferior",
+    metric = "Exp.shannon",
+    age_mid = age_mid,
+    observed = exp.shannon
+  )
+
+# Evenness (Pielou's J):
+bain_evenness_obs <- baiau.inf.estimates.df %>%
+  dplyr::transmute(
+    lake = "Baiau Inferior",
+    metric = "Evenness",
+    age_mid = age_mid,
+    observed = pielou
+  )
+
+# Join the observed values per metric:
+bain_estimates_obs <- dplyr::bind_rows(
+  bain_richness_obs,
+  bain_shannon_obs,
+  bain_evenness_obs
+)
+
+```
+
+# Combined dataframes with predictions & observations
+
+```{r, Baiau Superior & Baiau Inferior}
+
+# --------------- Estimates from models -----------------
+
+# Create a combined data frame across lakes:
+baiau_estimates_models_all <- dplyr::bind_rows(
+  ba_estimates_models,
+  bain_estimates_models
+)
+
+# --------------- Observations -----------------
+
+# Combined data frame with observed values per metric and lake:
+baiau_estimates_obs <- dplyr::bind_rows(
+  ba_estimates_obs,
+  bain_estimates_obs
+)
+
+```
+
+# Combined plot
+
+```{r}
+
+# ---------------- Arrangements ------------------
+
+# Into factor type:
+baiau_estimates_models_all <- baiau_estimates_models_all %>%
+  mutate(
+    metric = factor(
+      metric,
+      levels = c("Exp.shannon", "Species richness", "Evenness")
+    )
+  )
+
+baiau_estimates_models_all <- baiau_estimates_models_all %>%
+  mutate(
+    lake = factor(lake, levels = c("Baiau Superior", "Baiau Inferior"))
+  )
+
+baiau_estimates_obs <- baiau_estimates_obs %>%
+  mutate(
+    metric = factor(
+      metric,
+      levels = c("Exp.shannon", "Species richness", "Evenness")
+    )
+  )
+
+baiau_estimates_obs <- baiau_estimates_obs %>%
+  mutate(
+    lake = factor(lake, levels = c("Baiau Superior", "Baiau Inferior"))
+  )
+
+# Set the a common y-axis range of values:
+diversity_y_ranges <- bind_rows(
+  baiau_estimates_obs %>%
+    transmute(metric, value = observed),
+
+  baiau_estimates_models_all %>%
+    transmute(metric, value = lower),
+
+  baiau_estimates_models_all %>%
+    transmute(metric, value = upper)
+) %>%
+  group_by(metric) %>%
+  summarise(
+    minimum = min(value, na.rm = TRUE),
+    maximum = max(value, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+diversity_y_ranges       # Inspect the min and max values for each diversity estimate
+
+# Create a table with the range of values:     Taken into account the exclusion and inclusion of the paraconformity!
+y_limits <- tibble(
+  metric = factor(
+    c("Exp.shannon", "Species richness", "Evenness"),
+    levels = c("Exp.shannon", "Species richness", "Evenness")
+  ),
+  ymin = c(6.7, 20.4, 0.18),
+  ymax = c(34.0, 85.2, 0.57)
+)
+
+
+# ---------------- Plot ------------------
+
+# Using different colours for each model: I used this one, for now
+baiau_figs_a_c <- ggplot() +
+  
+  geom_blank(
+    data = y_limits,
+    aes(y = ymin),
+    inherit.aes = FALSE
+  ) +
+  geom_blank(
+    data = y_limits,
+    aes(y = ymax),
+    inherit.aes = FALSE
+  ) +
+  
+  # GAM CI
+  geom_ribbon(
+    data = baiau_estimates_models_all %>% 
+      filter(model == "GAM"),
+    aes(
+      x = age_mid,
+      ymin = lower,
+      ymax = upper
+    ),
+    fill = "grey70",
+    alpha = 0.25,
+    color = NA
+  ) +
+  
+  # Segmented CI
+  geom_ribbon(
+    data = baiau_estimates_models_all %>% 
+      filter(model == "Segmented"),
+    aes(
+      x = age_mid,
+      ymin = lower,
+      ymax = upper
+    ),
+    fill = "indianred1",
+    alpha = 0.18,
+    color = NA
+  ) +
+  
+  # GAM line
+  geom_line(
+    data = baiau_estimates_models_all %>% 
+      filter(model == "GAM"),
+    aes(
+      x = age_mid,
+      y = fit,
+      colour = model
+    ),
+    linewidth = 1
+  ) +
+  
+  # Segmented line
+  geom_line(
+    data = baiau_estimates_models_all %>% 
+      filter(model == "Segmented"),
+    aes(
+      x = age_mid,
+      y = fit,
+      colour = model
+    ),
+    linewidth = 1,
+    linetype = "solid"
+  ) +
+  
+  # Observed values
+  geom_point(
+    data = baiau_estimates_obs,
+    aes(
+      x = age_mid,
+      y = observed
+    ),
+    size = 1.8,
+    alpha = 0.4,
+    colour = "black"
+  ) +
+  
+  scale_x_reverse(
+    name = "Age (cal yr BP)",
+    breaks = scales::pretty_breaks(n = 5)
+  ) +
+  
+  scale_colour_manual(
+    values = c(
+      "GAM" = "black",
+      "Segmented" = "darkred"
+    )
+  ) +
+  
+  labs(
+    y = "Estimate",
+    colour = "Model"
+  ) +
+  
+  facet_grid(
+    metric ~ lake,
+    scales = "free_y",
+    labeller = labeller(
+      metric = c(
+        "Species richness" = "Species richness",
+        "Exp.shannon" = "Exp. Shannon",
+        "Evenness" = "Evenness"
+      )
+    )
+  ) +
+  
+  theme_bw(base_size = 13) +
+  theme(
+    aspect.ratio = 1,
+    panel.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 16),
+    axis.ticks = element_line(linewidth = 0.8),
+    axis.ticks.length = unit(0.25, "cm"),
+    strip.background = element_blank(),
+    strip.text.x = element_text(size = 18, face = "bold"),
+    strip.text.y = element_text(size = 16),
+    legend.position = "bottom"
+  )
+
+baiau_models_plot
+
+```
+
+# ------------------------------------------------------------------
+## EXCLUDING THE PARACONFORMITY ##
+# ------------------------------------------------------------------
+
+# -------------------------------------
+## Set the fixed 50-yr temporal bins ##
+# --------------------------------------
+
+# ------- Baiau Superior -------
+
+# Data frame & Pre-treatment
+
+```{r}
+
+# Initial raw unified dataframe:
+baiau.sup.df <- read.csv("Select your directory/Unified_raw_dataframes/baiau_superior_raw_unified_data_frame.csv", sep = ";")
+
+# Exclude the samples involved within the paraconformity:
+baiau.sup.df_filtered <- baiau.sup.df %>%
+  filter(!sample %in% 82:92)   # Samples to be excluded
+
+#-------------------------------
+# Fixed 50yr temporal bins
+#-------------------------------
+
+# Create the sample-age table carefully:
+ba_sample_ages <- baiau.sup.df_filtered %>%
+  dplyr::distinct(sample, mean.age, top.age, bottom.age) %>% 
+  dplyr::mutate(
+    age.interval = bottom.age - top.age
+  )
+
+# How many samples above the 50 years?
+ba_sample_ages %>%
+  dplyr::filter(age.interval > 50) %>%
+  dplyr::arrange(dplyr::desc(age.interval))  
+
+# A summary of the values:
+ba_sample_ages %>%
+  dplyr::summarise(
+    n_samples = dplyr::n(),
+    n_missing = sum(is.na(age.interval)),
+    min_interval = min(age.interval, na.rm = TRUE),
+    q25_interval = quantile(age.interval, 0.25, na.rm = TRUE),
+    median_interval = median(age.interval, na.rm = TRUE),
+    mean_interval = mean(age.interval, na.rm = TRUE),
+    q75_interval = quantile(age.interval, 0.75, na.rm = TRUE),
+    max_interval = max(age.interval, na.rm = TRUE),
+    n_over_200 = sum(age.interval > 200, na.rm = TRUE)
+  )
+
+# How many years per interval?
+bin_width <- 50
+
+# Diagnose crossing 50-year intervals:
+ba_sample_ages_50 <- ba_sample_ages %>%
+  dplyr::mutate(
+    interval_mean = floor(mean.age / bin_width) * bin_width,
+    interval_top = floor(top.age / bin_width) * bin_width,
+    interval_bottom = floor(bottom.age / bin_width) * bin_width,
+    crosses_50_boundary = interval_top != interval_bottom
+  )
+
+ba_sample_ages_50 %>%
+  dplyr::summarise(
+    n_samples = dplyr::n(),
+    median_interval = median(age.interval, na.rm = TRUE),
+    mean_interval = mean(age.interval, na.rm = TRUE),
+    max_interval = max(age.interval, na.rm = TRUE),
+    n_crossing = sum(crosses_50_boundary, na.rm = TRUE),
+    prop_crossing = mean(crosses_50_boundary, na.rm = TRUE),
+    n_over_50 = sum(age.interval > 50, na.rm = TRUE)
+  )
+
+
+# Assign samples to 50-year bins by mean age: 
+ba_sample_ages_50 <- ba_sample_ages_50 %>%
+  dplyr::mutate(
+    interval_start = floor(mean.age / bin_width) * bin_width,
+    interval_end = interval_start + bin_width,
+    interval_50 = paste0(interval_start, "-", interval_end, " cal yr BP")
+  )
+
+# How many samples per interval?
+sample_distribution_50 <- ba_sample_ages_50 %>%
+  dplyr::count(interval_start, interval_end, interval_50, name = "n_samples") %>%
+  dplyr::arrange(interval_start)
+
+sample_distribution_50
+
+# Join to the long-format data frame:
+baiau.sup.df.50_no_hiatus <- baiau.sup.df_filtered %>%
+  dplyr::left_join(
+    ba_sample_ages_50 %>%
+      dplyr::select(sample, interval_start, interval_end, interval_50),
+    by = "sample"
+  )
+
+# Diatom counts: sum valves by interval and taxon
+ba.diatom_counts_50_no_hiatus <- baiau.sup.df.50_no_hiatus %>%
+  dplyr::group_by(interval_start, interval_end, interval_50, Species_ID) %>%
+  dplyr::summarise(
+    total_valves = sum(No, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Create the community matrix:
+ba.diatom_counts_50_no_hiatus <- ba.diatom_counts_50_no_hiatus %>%     # The main input for sample coverage & diversity estimates!
+  tidyr::pivot_wider(
+    names_from = Species_ID,
+    values_from = total_valves,
+    values_fill = 0
+  ) %>%
+  dplyr::arrange(interval_start)
+
+ba.comm_50_no_hiatus <- ba.diatom_counts_50_no_hiatus %>%
+  dplyr::select(-interval_start, -interval_end, -interval_50)
+
+```
+
+# ------- Baiau Inferior -------
+
+# Data frame & Pre-treatment
+
+```{r}
+
+# Initial raw unified dataframe:
+baiau.inf.df <- read.csv("Select your directory/Unified_raw_dataframes/baiau_inferior_raw_unified_data_frame.csv", sep = ";")
+
+# Exclude the samples involved within the paraconformity:
+baiau.inf.df_filtered <- baiau.inf.df %>%
+  filter(!sample %in% 11:19)
+
+#-------------------------------
+# Fixed 50yr temporal bins
+#-------------------------------
+
+# Create the sample-age table carefully:
+bain_sample_ages <- baiau.inf.df_filtered %>%
+  dplyr::distinct(sample, mean.age, top.age, bottom.age) %>% 
+  dplyr::mutate(
+    age.interval = bottom.age - top.age
+  )
+
+# How many samples above the 50 years?
+bain_sample_ages %>%
+  dplyr::filter(age.interval > 50) %>%
+  dplyr::arrange(dplyr::desc(age.interval))  
+
+# A summary of the values:
+bain_sample_ages %>%
+  dplyr::summarise(
+    n_samples = dplyr::n(),
+    n_missing = sum(is.na(age.interval)),
+    min_interval = min(age.interval, na.rm = TRUE),
+    q25_interval = quantile(age.interval, 0.25, na.rm = TRUE),
+    median_interval = median(age.interval, na.rm = TRUE),
+    mean_interval = mean(age.interval, na.rm = TRUE),
+    q75_interval = quantile(age.interval, 0.75, na.rm = TRUE),
+    max_interval = max(age.interval, na.rm = TRUE),
+    n_over_200 = sum(age.interval > 200, na.rm = TRUE)
+  )
+
+# How many years per interval?
+bin_width <- 50
+
+# Diagnose crossing 50-year intervals:
+bain_sample_ages_50 <- bain_sample_ages %>%
+  dplyr::mutate(
+    interval_mean = floor(mean.age / bin_width) * bin_width,
+    interval_top = floor(top.age / bin_width) * bin_width,
+    interval_bottom = floor(bottom.age / bin_width) * bin_width,
+    crosses_50_boundary = interval_top != interval_bottom
+  )
+
+bain_sample_ages_50 %>%
+  dplyr::summarise(
+    n_samples = dplyr::n(),
+    median_interval = median(age.interval, na.rm = TRUE),
+    mean_interval = mean(age.interval, na.rm = TRUE),
+    max_interval = max(age.interval, na.rm = TRUE),
+    n_crossing = sum(crosses_50_boundary, na.rm = TRUE),
+    prop_crossing = mean(crosses_50_boundary, na.rm = TRUE),
+    n_over_50 = sum(age.interval > 50, na.rm = TRUE)
+  )
+
+
+# Assign samples to 50-year bins by mean age: 
+bain_sample_ages_50 <- bain_sample_ages_50 %>%
+  dplyr::mutate(
+    interval_start = floor(mean.age / bin_width) * bin_width,
+    interval_end = interval_start + bin_width,
+    interval_50 = paste0(interval_start, "-", interval_end, " cal yr BP")
+  )
+
+# How many samples per interval?
+sample_distribution_50 <- bain_sample_ages_50 %>%
+  dplyr::count(interval_start, interval_end, interval_50, name = "n_samples") %>%
+  dplyr::arrange(interval_start)
+
+sample_distribution_50
+
+# Join to the long-format data frame:
+baiau.inf.df.50_no_hiatus <- baiau.inf.df_filtered %>%
+  dplyr::left_join(
+    bain_sample_ages_50 %>%
+      dplyr::select(sample, interval_start, interval_end, interval_50),
+    by = "sample"
+  )
+
+# Diatom counts: sum valves by interval and taxon
+bain.diatom_counts_50_no_hiatus <- baiau.inf.df.50_no_hiatus %>%
+  dplyr::group_by(interval_start, interval_end, interval_50, Species_ID) %>%
+  dplyr::summarise(
+    total_valves = sum(No, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Create the community matrix:
+bain.diatom_comm_50_no_hiatus <- bain.diatom_counts_50_no_hiatus %>%     # The main input for sample coverage & diversity estimates!
+  tidyr::pivot_wider(
+    names_from = Species_ID,
+    values_from = total_valves,
+    values_fill = 0
+  ) %>%
+  dplyr::arrange(interval_start)
+
+bain.comm_50_no_hiatus <- bain.diatom_comm_50_no_hiatus %>%
+  dplyr::select(-interval_start, -interval_end, -interval_50)
+
+```
+
+# -----------------------
+## Diversity estimates ##
+# -----------------------
+
+# ------- Baiau Superior -------
+
+# Sample coverage & diversity estimates
+
+```{r}
+
+# ---------------- Max coverage estimation ---------------------------------
+
+ba.cov <- C_target(ba.comm_50_no_hiatus, factor = 2) #It's not recommended a factor>2. 
+
+# ---------------- Diversity indexes --------------------------------------
+
+# Transpose the matrix (required):
+ba.comm_50_no_hiatus_t <- t(ba.comm_50_no_hiatus) 
+
+# Diversity estimates (iNEXT package):
+ba.estimates_50_no_hiatus <- estimateD(ba.comm_50_no_hiatus_t,
+                       q = c(0, 1, 2),
+                       datatype = "abundance",
+                       base = "coverage",
+                       level = 0.96, #Sometimes, it's better to take just the first decimals not to get a too high adjustment 
+                       nboot = 500, 
+                       conf = 0.95)
+
+
+#To get the qD & upper-lower confidence limits:
+ba.estimates.grouped <- subset(ba.estimates_50_no_hiatus, select = c(1, 3:4, 6:8))
+
+#To separate the different diversity estimators and name them properly:
+ba.estimates.sep <- ba.estimates.grouped %>%
+  mutate(
+    Hill.spp.rich = case_when(
+    Order.q == 0 ~ qD,
+    TRUE ~ NA_real_
+  ),
+  Hill.spp.rich.LCL = case_when(
+    Order.q == 0 ~ qD.LCL,
+    TRUE ~ NA_real_
+  ),
+   Hill.spp.rich.UCL = case_when(
+    Order.q == 0 ~ qD.UCL,
+    TRUE ~ NA_real_
+  ),
+  exp.shannon = case_when(
+    Order.q == 1 ~ unlist(qD),
+    TRUE ~ NA_real_
+  ),
+   exp.shannon.LCL = case_when(
+    Order.q == 1 ~ qD.LCL,
+    TRUE ~ NA_real_
+  ),
+  exp.shannon.UCL = case_when(
+    Order.q == 1 ~ qD.UCL,
+    TRUE ~ NA_real_
+  ),
+  inv.simpson = case_when(
+    Order.q == 2 ~ unlist(qD),
+    TRUE ~ NA_real_
+  ),
+  inv.simpson.LCL = case_when(
+    Order.q == 2 ~ qD.LCL,
+    TRUE ~ NA_real_
+  ),
+  inv.simpson.UCL = case_when(
+    Order.q == 2 ~ qD.UCL,
+    TRUE ~ NA_real_
+  )
+) %>%
+  dplyr::select(-qD, -qD.LCL, -qD.UCL)
+
+#Removing the Order.q variable: 
+ba.estimates.sep <- ba.estimates.sep %>% dplyr::select(-Order.q)
+
+#To create the estimator's data frames, separated:
+exp.shannon.df <- ba.estimates.sep %>%
+  dplyr::select(Assemblage, Method, exp.shannon, exp.shannon.LCL, exp.shannon.UCL) %>%
+  na.omit(exp.shannon, exp.shannon.LCL, exp.shannon.UCL)
+
+simpson.df <-  ba.estimates.sep %>%
+  dplyr::select(Assemblage, Method, inv.simpson, inv.simpson.LCL, inv.simpson.UCL) %>%
+  na.omit(inv.simpson, inv.simpson.LCL, inv.simpson.UCL)
+
+richness.df <-  ba.estimates.sep %>%
+  dplyr::select(Assemblage, Method, Hill.spp.rich, Hill.spp.rich.LCL, Hill.spp.rich.UCL) %>%
+  na.omit(Hill.spp.rich, Hill.spp.rich.LCL, Hill.spp.rich.UCL)
+
+#All indexes at once:
+ba.estimates.merged <- richness.df %>% 
+  full_join(exp.shannon.df, by = c("Assemblage", "Method")) %>% 
+  full_join(simpson.df, by = c("Assemblage", "Method"))
+
+#Rename the Assemblage column as sample & customise it:
+colnames(ba.estimates.merged)[colnames(ba.estimates.merged) == "Assemblage"] <- "sample"
+
+baiau.sup.estimates.no_hiatus.df <- ba.estimates.merged %>% 
+  dplyr::mutate(
+    sample = as.numeric(gsub("data", "", sample))
+  )
+
+# Evenness (Pielou's J):
+baiau.sup.estimates.no_hiatus.df <- baiau.sup.estimates.no_hiatus.df %>% 
+  group_by(sample) %>% 
+  mutate(pielou = exp.shannon/Hill.spp.rich) %>% 
+  ungroup()
+
+# Create an interval lookup table:
+interval_lookup <- baiau.sup.df.50_no_hiatus %>%
+  dplyr::distinct(interval_start, interval_end, interval_50) %>%  # Avoid the mismatch between the number of observations (37 vs. 162).
+  dplyr::arrange(interval_start) %>%
+  dplyr::mutate(
+    sample = dplyr::row_number(),
+    age_mid = (interval_start + interval_end) / 2,
+    age_interval = paste0(interval_start, "-", interval_end, " cal yr BP")
+  )
+
+baiau.sup.estimates.no_hiatus.df <- baiau.sup.estimates.no_hiatus.df %>%
+  dplyr::left_join(
+    interval_lookup,
+    by = "sample"
+  )
+
+
+```
+
+# ------- Baiau Inferior -------
+
+# Sample coverage & diversity estimates
+
+```{r}
+
+# ---------------- Max coverage estimation ---------------------------------
+
+bain.cov <- C_target(bain.comm_50_no_hiatus, factor = 2) #It's not recommended a factor>2. 
+
+# ---------------- Diversity indexes --------------------------------------
+
+# Transpose the matrix (required):
+bain.comm_50_no_hiatus_t <- t(bain.comm_50_no_hiatus) 
+
+# Diversity estimates (iNEXT package):
+bain.estimates_50_no_hiatus <- estimateD(bain.comm_50_no_hiatus_t,
+                       q = c(0, 1, 2),
+                       datatype = "abundance",
+                       base = "coverage",
+                       level = 0.95, #Sometimes, it's better to take just the first decimals not to get a too high adjustment 
+                       nboot = 500, 
+                       conf = 0.96)
+
+
+#To get the qD & upper-lower confidence limits:
+bain.estimates.grouped <- subset(bain.estimates_50_no_hiatus, select = c(1, 3:4, 6:8))
+
+#To separate the different diversity estimators and name them properly:
+bain.estimates.sep <- bain.estimates.grouped %>%
+  mutate(
+    Hill.spp.rich = case_when(
+    Order.q == 0 ~ qD,
+    TRUE ~ NA_real_
+  ),
+  Hill.spp.rich.LCL = case_when(
+    Order.q == 0 ~ qD.LCL,
+    TRUE ~ NA_real_
+  ),
+   Hill.spp.rich.UCL = case_when(
+    Order.q == 0 ~ qD.UCL,
+    TRUE ~ NA_real_
+  ),
+  exp.shannon = case_when(
+    Order.q == 1 ~ unlist(qD),
+    TRUE ~ NA_real_
+  ),
+   exp.shannon.LCL = case_when(
+    Order.q == 1 ~ qD.LCL,
+    TRUE ~ NA_real_
+  ),
+  exp.shannon.UCL = case_when(
+    Order.q == 1 ~ qD.UCL,
+    TRUE ~ NA_real_
+  ),
+  inv.simpson = case_when(
+    Order.q == 2 ~ unlist(qD),
+    TRUE ~ NA_real_
+  ),
+  inv.simpson.LCL = case_when(
+    Order.q == 2 ~ qD.LCL,
+    TRUE ~ NA_real_
+  ),
+  inv.simpson.UCL = case_when(
+    Order.q == 2 ~ qD.UCL,
+    TRUE ~ NA_real_
+  )
+) %>%
+  dplyr::select(-qD, -qD.LCL, -qD.UCL)
+
+#Removing the Order.q variable: 
+bain.estimates.sep <- bain.estimates.sep %>% dplyr::select(-Order.q)
+
+#To create the estimator's data frames, separated:
+exp.shannon.df <- bain.estimates.sep %>%
+  dplyr::select(Assemblage, Method, exp.shannon, exp.shannon.LCL, exp.shannon.UCL) %>%
+  na.omit(exp.shannon, exp.shannon.LCL, exp.shannon.UCL)
+
+simpson.df <-  bain.estimates.sep %>%
+  dplyr::select(Assemblage, Method, inv.simpson, inv.simpson.LCL, inv.simpson.UCL) %>%
+  na.omit(inv.simpson, inv.simpson.LCL, inv.simpson.UCL)
+
+richness.df <-  bain.estimates.sep %>%
+  dplyr::select(Assemblage, Method, Hill.spp.rich, Hill.spp.rich.LCL, Hill.spp.rich.UCL) %>%
+  na.omit(Hill.spp.rich, Hill.spp.rich.LCL, Hill.spp.rich.UCL)
+
+#All indexes at once:
+bain.estimates.merged <- richness.df %>% 
+  full_join(exp.shannon.df, by = c("Assemblage", "Method")) %>% 
+  full_join(simpson.df, by = c("Assemblage", "Method"))
+
+#Rename the Assemblage column as sample & customise it:
+colnames(bain.estimates.merged)[colnames(bain.estimates.merged) == "Assemblage"] <- "sample"
+
+baiau.inf.estimates.no_hiatus.df <- bain.estimates.merged %>% 
+  dplyr::mutate(
+    sample = as.numeric(gsub("data", "", sample))
+  )
+
+# Evenness (Pielou's J):
+baiau.inf.estimates.no_hiatus.df <- baiau.inf.estimates.no_hiatus.df %>% 
+  group_by(sample) %>% 
+  mutate(pielou = exp.shannon/Hill.spp.rich) %>% 
+  ungroup()
+
+# Create an interval lookup table:
+interval_lookup <- baiau.inf.df.50_no_hiatus %>%
+  dplyr::distinct(interval_start, interval_end, interval_50) %>%  # Avoid the mismatch between the number of observations (37 vs. 162).
+  dplyr::arrange(interval_start) %>%
+  dplyr::mutate(
+    sample = dplyr::row_number(),
+    age_mid = (interval_start + interval_end) / 2,
+    age_interval = paste0(interval_start, "-", interval_end, " cal yr BP")
+  )
+
+baiau.inf.estimates.no_hiatus.df <- baiau.inf.estimates.no_hiatus.df %>%
+  dplyr::left_join(
+    interval_lookup,
+    by = "sample"
+  )
+
+```
+
+# -------------------------------
+## Segmented vs. Linear models ##
+# -------------------------------
+
+# Homemade functions
+
+```{r}
+
+# Function for segmented model summary extraction:
+extract_segmented_summary <- function(lm_model, seg_model, metric_name) {
+  
+  bp_ci <- confint(seg_model)
+  slope_values <- slope(seg_model)$age_mid
+  aic_values <- AIC(lm_model, seg_model)
+  davies <- segmented::davies.test(lm_model, seg.Z = ~ age_mid)
+  
+  tibble::tibble(
+    metric = metric_name,
+    selected_model = "segmented",
+    breakpoint = seg_model$psi[, "Est."],
+    breakpoint_LCL = bp_ci[, "CI(95%).low"],
+    breakpoint_UCL = bp_ci[, "CI(95%).up"],
+    davies_p = davies$p.value,
+    AIC_linear = aic_values$AIC[1],
+    AIC_segmented = aic_values$AIC[2],
+    delta_AIC = aic_values$AIC[1] - aic_values$AIC[2],
+    slope1 = slope_values["slope1", "Est."],
+    slope1_LCL = slope_values["slope1", "CI(95%).l"],
+    slope1_UCL = slope_values["slope1", "CI(95%).u"],
+    slope2 = slope_values["slope2", "Est."],
+    slope2_LCL = slope_values["slope2", "CI(95%).l"],
+    slope2_UCL = slope_values["slope2", "CI(95%).u"]
+  )
+}
+
+# Function for linear model summary extraction:
+extract_linear_summary <- function(lm_model, metric_name) {
+  
+  lm_summary <- summary(lm_model)
+  coefs <- coef(lm_summary)
+  
+  tibble::tibble(
+    metric = metric_name,
+    selected_model = "linear",
+    breakpoint = NA_real_,
+    breakpoint_LCL = NA_real_,
+    breakpoint_UCL = NA_real_,
+    davies_p = NA_real_,
+    AIC_linear = AIC(lm_model),
+    AIC_segmented = NA_real_,
+    delta_AIC = NA_real_,
+    slope1 = coefs["age_mid", "Estimate"],
+    slope1_LCL = NA_real_,
+    slope1_UCL = NA_real_,
+    slope2 = NA_real_,
+    slope2_LCL = NA_real_,
+    slope2_UCL = NA_real_,
+    linear_p = coefs["age_mid", "Pr(>|t|)"],
+    r_squared = lm_summary$r.squared,
+    adj_r_squared = lm_summary$adj.r.squared
+  )
+}
+
+# Function for segmented predictions:
+make_segmented_predictions <- function(data, seg_model, response, n = 300) {
+  
+  pred_df <- data.frame(
+    age_mid = seq(
+      min(data$age_mid, na.rm = TRUE),
+      max(data$age_mid, na.rm = TRUE),
+      length.out = n
+    )
+  )
+  
+  pred_df$fit <- predict(seg_model, newdata = pred_df)
+  pred_df$response <- response
+  pred_df$breakpoint <- seg_model$psi[, "Est."]
+  
+  pred_df
+}
+
+# Function for linear predictions:
+make_linear_predictions <- function(data, lm_model, response, n = 300) {
+  
+  pred_df <- data.frame(
+    age_mid = seq(
+      min(data$age_mid, na.rm = TRUE),
+      max(data$age_mid, na.rm = TRUE),
+      length.out = n
+    )
+  )
+  
+  pred_df$fit <- predict(lm_model, newdata = pred_df)
+  pred_df$response <- response
+  
+  pred_df
+}
+
+
+```
+
+# ------- Baiau Superior -------
+
+# Fit the segmented & linear models & exploring the trends
+
+```{r}
+
+# Initial dataframe:
+baiau.sup.estimates.no_hiatus.df <- read.csv("Select your directory/Without_paraconformity/baiau.sup.estimates.no_hiatus.df.csv", sep = ";")
+
+# Initial pre-visualisation:
+ggplot(baiau.sup.estimates.no_hiatus.df, aes(x = age_mid, y = Hill.spp.rich)) +
+  geom_point() +
+  geom_smooth(method = "loess") +
+  scale_x_reverse() +
+  theme_bw() +
+  theme(aspect.ratio = 1,
+        panel.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+
+# -------------------- Linear or segmented regression? --------------------
+
+#i) --------- Species richness ---------
+
+# Fit the initial linear model:
+ba.richness.lm <- lm(Hill.spp.rich ~ age_mid, data = baiau.sup.estimates.no_hiatus.df)
+
+# Fit the segmented model:
+ba.richness.seg <- segmented(ba.richness.lm, seg.Z = ~age_mid, psi = list(age_mid = 2000))
+
+# Model outputs:
+summary(ba.richness.seg)
+confint(ba.richness.seg)
+
+
+AIC(ba.richness.lm, ba.richness.seg)
+
+davies.test(ba.richness.lm, seg.Z = ~age_mid)
+
+slope(ba.richness.seg)
+
+#ii) --------- Exponential of Shannon diversity (H') ---------
+
+# Fit the initial linear model:
+ba.shannon.lm <- lm(exp.shannon ~ age_mid, data = baiau.sup.estimates.no_hiatus.df)
+
+# Fit the segmented model:
+ba.shannon.seg <- segmented(ba.shannon.lm, seg.Z = ~age_mid, psi = list(age_mid = 2000))
+
+# Model outputs:
+summary(ba.shannon.seg)
+confint(ba.shannon.seg)
+
+AIC(ba.shannon.lm, ba.shannon.seg)
+
+davies.test(ba.shannon.lm, seg.Z = ~ age_mid)
+
+slope(ba.shannon.seg)
+
+#iii) --------- Evenness (Pielou's J) ---------
+
+# Fit the initial linear model:
+ba.evenness.lm <- lm(pielou ~ age_mid, data = baiau.sup.estimates.no_hiatus.df)
+
+# Model output:
+summary(ba.evenness.lm)
+
+AIC(ba.evenness.lm)
+
+# To keep the comparison with the rest of model for documentation:
+ba.evenness.seg <- segmented(ba.evenness.lm, seg.Z = ~ age_mid, psi = list(age_mid = 2000))
+
+summary(ba.evenness.seg)
+confint(ba.evenness.seg)
+
+AIC(ba.evenness.lm, ba.evenness.seg)
+
+davies.test(ba.evenness.lm, seg.Z = ~ age_mid)
+
+slope(ba.evenness.seg)
+
+# -------------------- Baiau Superior model summary table --------------------
+
+baiau.sup.model.no_hiatus.summary <- dplyr::bind_rows(
+  extract_segmented_summary(
+    lm_model = ba.richness.lm,
+    seg_model = ba.richness.seg,
+    metric_name = "Species richness"
+  ),
+  extract_segmented_summary(
+    lm_model = ba.shannon.lm,
+    seg_model = ba.shannon.seg,
+    metric_name = "Exponential Shannon diversity"
+  ),
+  extract_linear_summary(
+    lm_model = ba.evenness.lm,
+    metric_name = "Evenness"
+  )
+)
+
+baiau.sup.model.no_hiatus.summary
+
+# -------------------- Plots (using ggplot) --------------------
+
+# Create predictions:
+ba.richness.pred <- make_segmented_predictions(
+  data = baiau.sup.estimates.no_hiatus.df,
+  seg_model = ba.richness.seg,
+  response = "Hill.spp.rich"
+)
+
+ba.shannon.pred <- make_segmented_predictions(
+  data = baiau.sup.estimates.no_hiatus.df,
+  seg_model = ba.shannon.seg,
+  response = "exp.shannon"
+)
+
+ba.evenness.pred <- make_linear_predictions(
+  data = baiau.sup.estimates.no_hiatus.df,
+  lm_model = ba.evenness.lm,
+  response = "pielou"
+)
+
+
+plot_bain <- function(data, predictions, model, response, y_label,
+                      segmented_fit = TRUE) {
+
+  # Age range based only on Baiau Inferior
+  x_limits <- range(data$age_mid, na.rm = TRUE)
+
+  if (segmented_fit) {
+
+    # Breakpoint and its confidence interval
+    bp <- unname(model$psi[1, "Est."])
+    bp_ci <- confint(model)
+    bp_limits <- as.numeric(
+      bp_ci[1, c("CI(95%).low", "CI(95%).up")]
+    )
+
+    # Determine line type from each slope's confidence interval
+    slopes <- segmented::slope(model)$age_mid
+
+    significant <- slopes[, "CI(95%).l"] > 0 |
+                   slopes[, "CI(95%).u"] < 0
+
+    # Include the breakpoint in both segments so the lines meet
+    bp_row <- data.frame(
+      age_mid = bp,
+      fit = as.numeric(
+        predict(model, newdata = data.frame(age_mid = bp))
+      )
+    )
+
+    pred <- predictions[, c("age_mid", "fit")]
+
+    younger <- rbind(pred[pred$age_mid < bp, ], bp_row)
+    older   <- rbind(bp_row, pred[pred$age_mid > bp, ])
+
+    younger$segment <- "younger"
+    older$segment   <- "older"
+
+    younger$linetype <- if (significant[1]) "solid" else "dashed"
+    older$linetype   <- if (significant[2]) "solid" else "dashed"
+
+    predictions <- rbind(younger, older)
+
+  } else {
+
+    # Significance of the overall linear slope
+    slope_ci <- confint(model)["age_mid", ]
+    significant <- slope_ci[1] > 0 | slope_ci[2] < 0
+
+    predictions$segment <- "all"
+    predictions$linetype <- if (significant) "solid" else "dashed"
+  }
+
+  p <- ggplot(data, aes(x = age_mid, y = .data[[response]])) +
+    geom_point(size = 2.5) +
+    geom_line(
+      data = predictions,
+      aes(
+        x = age_mid,
+        y = fit,
+        linetype = linetype,
+        group = segment
+      ),
+      inherit.aes = FALSE,
+      linewidth = 1.2,
+      colour = "darkred"
+    ) +
+    scale_linetype_identity() +
+    scale_x_reverse(
+      breaks = scales::breaks_pretty(n = 5)
+    ) +
+    coord_cartesian(xlim = rev(x_limits)) +
+    labs(
+      x = "Age (cal yr BP)",
+      y = y_label
+    ) +
+    theme_bw() +
+    theme(
+      aspect.ratio = 1,
+      panel.grid = element_blank(),
+      axis.text = element_text(size = 20),
+      axis.title = element_text(size = 22)
+    )
+
+  if (segmented_fit) {
+    p <- p +
+      geom_vline(
+        xintercept = bp,
+        colour = "blue"
+      ) +
+      geom_vline(
+        xintercept = bp_limits,
+        linetype = "dotted",
+        colour = "blue",
+        linewidth = 1,
+        alpha = 0.7
+      )
+  }
+
+  p
+}
+
+ba.richness.plot <- plot_bain(
+  data = baiau.sup.estimates.no_hiatus.df,
+  predictions = ba.richness.pred,
+  model = ba.richness.seg,
+  response = "Hill.spp.rich",
+  y_label = "Species richness"
+)
+
+ba.shannon.plot <- plot_bain(
+  data = baiau.sup.estimates.no_hiatus.df,
+  predictions = ba.shannon.pred,
+  model = ba.shannon.seg,
+  response = "exp.shannon",
+  y_label = "Exponential Shannon diversity"
+)
+
+ba.evenness.plot <- plot_bain(
+  data = baiau.sup.estimates.no_hiatus.df,
+  predictions = ba.evenness.pred,
+  model = ba.evenness.lm,
+  response = "pielou",
+  y_label = "Evenness",
+  segmented_fit = FALSE
+)
+
+ba.richness.plot
+ba.shannon.plot
+ba.evenness.plot
+
+ba_diversity_no_hiatus_plots <- (ba.richness.plot | ba.shannon.plot | ba.evenness.plot) +
+  plot_annotation(
+    title = "Baiau Superior") &
+  theme(plot.title = element_text(size = 24, face = "bold", hjust = 0.05),
+        axis.title = element_text(size = 18),
+        axis.text  = element_text(size = 14))
+ba_diversity_no_hiatus_plots
+
+```
+
+# ------- Baiau Inferior -------
+
+# Fit the segmented & linear models & exploring the trends
+
+```{r}
+
+# Initial dataframe:
+baiau.inf.estimates.no_hiatus.df <- read.csv("Select your directory/Without_paraconformity/baiau.inf.estimates.no_hiatus.df.csv", sep = ";")
+
+# Initial pre-visualisation:
+ggplot(baiau.inf.estimates.no_hiatus.df, aes(x = age_mid, y = Hill.spp.rich)) +
+  geom_point() +
+  geom_smooth(method = "loess") +
+  scale_x_reverse() +
+  theme_bw() +
+  theme(aspect.ratio = 1,
+        panel.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+
+# -------------------- Linear or segmented regression? --------------------
+
+#i) --------- Species richness ---------
+
+# Fit the initial linear model:
+bain.richness.lm <- lm(Hill.spp.rich ~ age_mid, data = baiau.inf.estimates.no_hiatus.df)
+
+# Fit the segmented model:
+bain.richness.seg <- segmented(bain.richness.lm, seg.Z = ~age_mid, psi = list(age_mid = 2000))
+
+# Model outputs:
+summary(bain.richness.seg)
+confint(bain.richness.seg)
+
+
+AIC(bain.richness.lm, bain.richness.seg)
+
+davies.test(bain.richness.lm, seg.Z = ~age_mid)
+
+slope(bain.richness.seg)
+
+#ii) --------- Exponential of Shannon diversity (H') ---------
+
+# Fit the initial linear model:
+bain.shannon.lm <- lm(exp.shannon ~ age_mid, data = baiau.inf.estimates.no_hiatus.df)
+
+# Fit the segmented model:
+bain.shannon.seg <- segmented(bain.shannon.lm, seg.Z = ~age_mid, psi = list(age_mid = 2000))
+
+# Model outputs:
+summary(bain.shannon.seg)
+confint(bain.shannon.seg)
+
+AIC(bain.shannon.lm, bain.shannon.seg)
+
+davies.test(bain.shannon.lm, seg.Z = ~ age_mid)
+
+slope(bain.shannon.seg)
+
+#iii) --------- Evenness (Pielou's J) ---------
+
+# Fit the initial linear model:
+bain.evenness.lm <- lm(pielou ~ age_mid, data = baiau.inf.estimates.no_hiatus.df)
+
+# Model output:
+summary(bain.evenness.lm)
+
+AIC(bain.evenness.lm)
+
+# To keep the comparison with the rest of model for documentation:
+bain.evenness.seg <- segmented(bain.evenness.lm, seg.Z = ~ age_mid, psi = list(age_mid = 2000))
+
+summary(bain.evenness.seg)
+confint(bain.evenness.seg)
+
+AIC(bain.evenness.lm, bain.evenness.seg)
+
+davies.test(bain.evenness.lm, seg.Z = ~ age_mid)
+
+slope(bain.evenness.seg)
+
+# -------------------- Baiau Inferior model summary table --------------------
+
+baiau.inf.model.no_hiatus.summary <- dplyr::bind_rows(
+  extract_segmented_summary(
+    lm_model = bain.richness.lm,
+    seg_model = bain.richness.seg,
+    metric_name = "Species richness"
+  ),
+  extract_segmented_summary(
+    lm_model = bain.shannon.lm,
+    seg_model = bain.shannon.seg,
+    metric_name = "Exponential Shannon diversity"
+  ),
+  extract_linear_summary(
+    lm_model = bain.evenness.lm,
+    metric_name = "Evenness"
+  )
+)
+
+baiau.inf.model.no_hiatus.summary
+
+# -------------------- Plots (using ggplot) --------------------
+
+# Create predictions:
+bain.richness.pred <- make_segmented_predictions(
+  data = baiau.inf.estimates.no_hiatus.df,
+  seg_model = bain.richness.seg,
+  response = "Hill.spp.rich"
+)
+
+bain.shannon.pred <- make_segmented_predictions(
+  data = baiau.inf.estimates.no_hiatus.df,
+  seg_model = bain.shannon.seg,
+  response = "exp.shannon"
+)
+
+bain.evenness.pred <- make_linear_predictions(
+  data = baiau.inf.estimates.no_hiatus.df,
+  lm_model = bain.evenness.lm,
+  response = "pielou"
+)
+
+
+plot_bain <- function(data, predictions, model, response, y_label,
+                      segmented_fit = TRUE) {
+
+  # Age range based only on Baiau Inferior
+  x_limits <- range(data$age_mid, na.rm = TRUE)
+
+  if (segmented_fit) {
+
+    # Breakpoint and its confidence interval
+    bp <- unname(model$psi[1, "Est."])
+    bp_ci <- confint(model)
+    bp_limits <- as.numeric(
+      bp_ci[1, c("CI(95%).low", "CI(95%).up")]
+    )
+
+    # Determine line type from each slope's confidence interval
+    slopes <- segmented::slope(model)$age_mid
+
+    significant <- slopes[, "CI(95%).l"] > 0 |
+                   slopes[, "CI(95%).u"] < 0
+
+    # Include the breakpoint in both segments so the lines meet
+    bp_row <- data.frame(
+      age_mid = bp,
+      fit = as.numeric(
+        predict(model, newdata = data.frame(age_mid = bp))
+      )
+    )
+
+    pred <- predictions[, c("age_mid", "fit")]
+
+    younger <- rbind(pred[pred$age_mid < bp, ], bp_row)
+    older   <- rbind(bp_row, pred[pred$age_mid > bp, ])
+
+    younger$segment <- "younger"
+    older$segment   <- "older"
+
+    younger$linetype <- if (significant[1]) "solid" else "dashed"
+    older$linetype   <- if (significant[2]) "solid" else "dashed"
+
+    predictions <- rbind(younger, older)
+
+  } else {
+
+    # Significance of the overall linear slope
+    slope_ci <- confint(model)["age_mid", ]
+    significant <- slope_ci[1] > 0 | slope_ci[2] < 0
+
+    predictions$segment <- "all"
+    predictions$linetype <- if (significant) "solid" else "dashed"
+  }
+
+  p <- ggplot(data, aes(x = age_mid, y = .data[[response]])) +
+    geom_point(size = 2.5) +
+    geom_line(
+      data = predictions,
+      aes(
+        x = age_mid,
+        y = fit,
+        linetype = linetype,
+        group = segment
+      ),
+      inherit.aes = FALSE,
+      linewidth = 1.2,
+      colour = "darkred"
+    ) +
+    scale_linetype_identity() +
+    scale_x_reverse(
+      breaks = scales::breaks_pretty(n = 5)
+    ) +
+    coord_cartesian(xlim = rev(x_limits)) +
+    labs(
+      x = "Age (cal yr BP)",
+      y = y_label
+    ) +
+    theme_bw() +
+    theme(
+      aspect.ratio = 1,
+      panel.grid = element_blank(),
+      axis.text = element_text(size = 20),
+      axis.title = element_text(size = 22)
+    )
+
+  if (segmented_fit) {
+    p <- p +
+      geom_vline(
+        xintercept = bp,
+        colour = "blue"
+      ) +
+      geom_vline(
+        xintercept = bp_limits,
+        linetype = "dotted",
+        colour = "blue",
+        linewidth = 1,
+        alpha = 0.7
+      )
+  }
+
+  p
+}
+
+bain.richness.plot <- plot_bain(
+  data = baiau.inf.estimates.no_hiatus.df,
+  predictions = bain.richness.pred,
+  model = bain.richness.seg,
+  response = "Hill.spp.rich",
+  y_label = "Species richness"
+)
+
+bain.shannon.plot <- plot_bain(
+  data = baiau.inf.estimates.no_hiatus.df,
+  predictions = bain.shannon.pred,
+  model = bain.shannon.seg,
+  response = "exp.shannon",
+  y_label = "Exponential Shannon diversity"
+)
+
+bain.evenness.plot <- plot_bain(
+  data = baiau.inf.estimates.no_hiatus.df,
+  predictions = bain.evenness.pred,
+  model = bain.evenness.lm,
+  response = "pielou",
+  y_label = "Evenness",
+  segmented_fit = FALSE
+)
+
+bain.richness.plot
+bain.shannon.plot
+bain.evenness.plot
+
+bain_diversity_no_hiatus_plots <- (bain.richness.plot | bain.shannon.plot | bain.evenness.plot) +
+  plot_annotation(
+    title = "Baiau Inferior") &
+  theme(plot.title = element_text(size = 24, face = "bold", hjust = 0.05),
+        axis.title = element_text(size = 18),
+        axis.text  = element_text(size = 14))
+bain_diversity_no_hiatus_plots
+
+```
+
+# -------------------------------
+## Generalised Additive Models ##
+# -------------------------------
+
+# Homemade function to evaluate k value
+
+```{r, Homemade function}
+
+# ---------------- Function to find a suitable k value ----------------
+
+evaluate_gam_k <- function(data, response, predictor, k_min = 3, k_max = 100) {    # Exclude the "weight_var" parameter from the function.
+  
+  library(mgcv)
+  
+  results <- data.frame(
+    k = integer(),
+    edf = numeric(),
+    k_index = numeric(),
+    p_value = numeric(),
+    stringsAsFactors = FALSE
+  )
+  
+  formula_base <- paste(response, "~ s(", predictor, ", bs = 'tp', k = %d)", sep = "")
+  
+  for (k_val in k_min:k_max) {
+    
+    cat("Fitting model with k =", k_val, "\n")
+    
+    model_formula <- as.formula(sprintf(formula_base, k_val))
+    
+    fit <- tryCatch(
+      gam(
+        model_formula,
+        data = data,
+        family = gaussian,
+        method = "REML"
+      ),
+      error = function(e) {
+        cat("Model failed for k =", k_val, "\n")
+        return(NULL)
+      }
+    )
+    
+    if (!is.null(fit)) {
+      
+      kcheck <- tryCatch(
+        mgcv::k.check(fit),
+        error = function(e) {
+          cat("k.check failed for k =", k_val, "\n")
+          return(NULL)
+        }
+      )
+      
+      if (!is.null(kcheck)) {
+        
+        edf_val <- sum(fit$edf)
+        k_index <- kcheck[1, "k-index"]
+        p_val <- kcheck[1, "p-value"]
+        
+        results <- rbind(
+          results,
+          data.frame(
+            k = k_val,
+            edf = edf_val,
+            k_index = k_index,
+            p_value = p_val
+          )
+        )
+        
+      } else {
+        cat("No k.check returned for k =", k_val, "\n")
+      }
+    }
+  }
+  
+  return(results)
+}
+
+# ---------------- Function to extract GAM summary information ----------------
+
+extract_gam_summary <- function(model, metric, k_used) {
+  
+  # Model summary
+  sm <- summary(model)
+  
+  # Smooth table
+  smooth_table <- as.data.frame(sm$s.table)
+  
+  # k-check table
+  k_table <- as.data.frame(mgcv::k.check(model))
+  
+  data.frame(
+    metric = metric,
+    k = k_used,
+    edf = smooth_table[1, "edf"],
+    ref_df = smooth_table[1, "Ref.df"],
+    F_value = smooth_table[1, "F"],
+    p_value = smooth_table[1, "p-value"],
+    adj_r_squared = sm$r.sq,
+    deviance_explained = sm$dev.expl,
+    REML = sm$sp.criterion,
+    scale = sm$scale,
+    n = length(model$y),
+    k_prime = k_table[1, "k'"],
+    k_index = k_table[1, "k-index"],
+    k_p_value = k_table[1, "p-value"],
+    row.names = NULL
+  )
+}
+
+```
+
+# ------- Baiau Superior -------
+
+```{r, Fit the models}
+
+# Baiau Superior data frame:
+baiau.sup.estimates.no_hiatus.df <- read.csv("Select your directory/Without_paraconformity/baiau.sup.estimates.no_hiatus.df.csv", sep = ";")
+
+# ------------------- Species richness --------------------
+
+# Compute all the models for choosing a suitable 'k':
+ba.richness.gam.table <- evaluate_gam_k(  # Homemade function.
+  data = baiau.sup.estimates.no_hiatus.df,
+  response = "Hill.spp.rich",
+  predictor = "age_mid",
+  k_min = 3,
+  k_max = 100)
+
+#GAM with only one parameter:
+ba_richness_gam <- gam(Hill.spp.rich ~ s(age_mid, k = 29), 
+              data = baiau.sup.estimates.no_hiatus.df,  # Data frame.
+              family = gaussian,
+              method = "REML", #Smoothness selection (lambda). 
+              ) 
+              
+
+summary(ba_richness_gam)
+
+acf(residuals(ba_richness_gam), main = "Autocorrelation of residuals") #Check for autocorrelation of residuals. 
+
+# Check the number of basis functions & diagnostic model:
+gam.check(ba_richness_gam, rep = 500) #'mgcv' package.
+
+ba_richness_diagnostic <- appraise(ba_richness_gam, method = 'simulate') +      #'gratia' package.
+ plot_annotation(
+  title = "Baiau Superior - Species richness"
+  ) &
+  theme(
+    plot.title = element_text(size = 20, face = "bold")
+  )
+
+ba_richness_diagnostic 
+
+# ------------------- Exponential Shannon diversity --------------------
+
+# Compute all the models for choosing a suitable 'k':
+ba.shannon.gam.table <- evaluate_gam_k( #Homemade function.
+  data = baiau.sup.estimates.no_hiatus.df,
+  response = "exp.shannon",
+  predictor = "age_mid",
+  k_min = 3,
+  k_max = 100)
+
+#GAM with only one parameter:
+ba_shannon_gam <- gam(exp.shannon ~ s(age_mid, k = 13), 
+              data = baiau.sup.estimates.no_hiatus.df, #Data frame.
+              family = gaussian,
+              method = "REML", #Smoothness selection (lambda). 
+              ) 
+              
+
+summary(ba_shannon_gam) 
+
+acf(residuals(ba_shannon_gam), main = "Autocorrelation of residuals") #Check for autocorrelation of residuals.
+
+# Check the number of basis functions & diagnostic model:
+gam.check(ba_shannon_gam, rep = 500) #'mgcv' package.
+
+ba_shannon_diagnostic <- appraise(ba_shannon_gam, method = 'simulate') +      #'gratia' package.
+ plot_annotation(
+  title = "Baiau Superior - Exponential of Shannon diversity"
+  ) &
+  theme(
+    plot.title = element_text(size = 20, face = "bold")
+  )
+
+ba_shannon_diagnostic
+
+# ------------------- Evenness --------------------
+
+# Compute all the models for choosing a suitable 'k':
+ba.evenness.gam.table <- evaluate_gam_k( # Homemade function.
+  data = baiau.sup.estimates.no_hiatus.df,
+  response = "pielou",
+  predictor = "age_mid",
+  k_min = 3,
+  k_max = 100)
+
+#GAM with only one parameter:
+ba_evenness_gam <- gam(pielou ~ s(age_mid, k = 7), 
+              data = baiau.sup.estimates.no_hiatus.df, # Data frame.
+              family = gaussian,
+              method = "REML", #Smoothness selection (lambda). 
+              ) 
+              
+
+summary(ba_evenness_gam) 
+
+acf(residuals(ba_evenness_gam), main = "Autocorrelation of residuals") #Check for autocorrelation of residuals. 
+
+# Check the number of basis functions & diagnostic model:
+gam.check(ba_evenness_gam, rep = 500) #'mgcv' package.
+
+ba_evenness_diagnostic <- appraise(ba_evenness_gam, method = 'simulate') +      #'gratia' package.
+ plot_annotation(
+  title = "Baiau Superior - Evenness (Pielou's J)"
+  ) &
+  theme(
+    plot.title = element_text(size = 20, face = "bold")
+  )
+ba_evenness_diagnostic
+
+```
+
+```{r, GAM summary table}
+
+# Summary table:
+ba_gam_summary_table <- dplyr::bind_rows(
+  extract_gam_summary(
+    model = ba_richness_gam,
+    metric = "Species richness",
+    k_used = 29
+  ),
+  extract_gam_summary(
+    model = ba_shannon_gam,
+    metric = "Exponential Shannon diversity",
+    k_used = 13
+  ),
+  extract_gam_summary(
+    model = ba_evenness_gam,
+    metric = "Evenness",
+    k_used = 7
+  )
+)
+
+ba_gam_summary_table
+
+# Round for readability:
+ba_gam_summary_table <- ba_gam_summary_table %>%
+  dplyr::mutate(
+    dplyr::across(
+      where(is.numeric),
+      ~ round(.x, 4)
+    )
+  )
+
+ba_gam_summary_table
+
+
+```
+
+# ------- Baiau Inferior -------
+
+```{r, Fit the models}
+
+# Baiau Superior data frame including the Hill numbers:
+baiau.inf.estimates.no_hiatus.df <- read.csv("Select your directory/Without_paraconformity/baiau.inf.estimates.no_hiatus.df.csv", sep = ";")
+
+# ------------------- Species richness --------------------
+
+# Compute all the models for choosing a suitable 'k':
+bain.richness.gam.table <- evaluate_gam_k( # Homemade function.
+  data = baiau.inf.estimates.no_hiatus.df,
+  response = "Hill.spp.rich",
+  predictor = "age_mid",
+  k_min = 3,
+  k_max = 100)
+
+#GAM with only one parameter:
+bain_richness_gam <- gam(Hill.spp.rich ~ s(age_mid, k = 20), 
+              data = baiau.inf.estimates.no_hiatus.df, # Data frame.
+              family = gaussian,
+              method = "REML", #Smoothness selection (lambda). 
+              ) 
+              
+
+summary(bain_richness_gam) 
+
+acf(residuals(bain_richness_gam), main = "Autocorrelation of residuals") #Check for autocorrelation of residuals. 
+
+# Check the number of basis functions & diagnostic model:
+gam.check(bain_richness_gam, rep = 500) #'mgcv' package.
+
+bain_richness_diagnostic <- appraise(bain_richness_gam, method = 'simulate') +      #'gratia' package.
+ plot_annotation(
+  title = "Baiau Inferior - Species richness"
+  ) &
+  theme(
+    plot.title = element_text(size = 20, face = "bold")
+  )
+bain_richness_diagnostic
+
+# ------------------- Exponential Shannon diversity --------------------
+
+# Compute all the models for choosing a suitable 'k':
+bain.shannon.gam.table <- evaluate_gam_k( # Homemade function.
+  data = baiau.inf.estimates.no_hiatus.df,
+  response = "exp.shannon",
+  predictor = "age_mid",
+  k_min = 3,
+  k_max = 100)
+
+#GAM with only one parameter:
+bain_shannon_gam <- gam(exp.shannon ~ s(age_mid, k = 14), 
+              data = baiau.inf.estimates.no_hiatus.df, # Data frame.
+              family = gaussian,
+              method = "REML", #Smoothness selection (lambda). 
+              ) 
+              
+
+summary(bain_shannon_gam) #mean.age statistically significant.
+
+acf(residuals(bain_shannon_gam), main = "Autocorrelation of residuals") #Check for autocorrelation of residuals. 
+
+# Check the number of basis functions & diagnostic model:
+gam.check(bain_shannon_gam, rep = 500) #'mgcv' package.
+
+bain_shannon_diagnostic <- appraise(bain_shannon_gam, method = 'simulate') +      #'gratia' package.
+ plot_annotation(
+  title = "Baiau Inferior - Exponential of Shannon diversity"
+  ) &
+  theme(
+    plot.title = element_text(size = 20, face = "bold")
+  )
+bain_shannon_diagnostic
+
+# ------------------- Evenness --------------------
+
+# Compute all the models for choosing a suitable 'k':
+bain.evenness.gam.table <- evaluate_gam_k( # Homemade function.
+  data = baiau.inf.estimates.no_hiatus.df,
+  response = "pielou",
+  predictor = "age_mid",
+  k_min = 3,
+  k_max = 100)
+
+#GAM with only one parameter:
+bain_evenness_gam <- gam(pielou ~ s(age_mid, k = 18), 
+              data = baiau.inf.estimates.no_hiatus.df, # Data frame.
+              family = gaussian,
+              method = "REML", #Smoothness selection (lambda). 
+              ) 
+              
+
+summary(bain_evenness_gam) 
+
+acf(residuals(bain_evenness_gam), main = "Autocorrelation of residuals") #Check for autocorrelation of residuals.
+
+# Check the number of basis functions & diagnostic model:
+gam.check(bain_evenness_gam, rep = 500) #'mgcv' package.
+
+bain_evenness_diagnostic <- appraise(bain_evenness_gam, method = 'simulate') +      #'gratia' package.
+ plot_annotation(
+  title = "Baiau Inferior - Evenness (Pielou's J)"
+  ) &
+  theme(
+    plot.title = element_text(size = 20, face = "bold")
+  )
+bain_evenness_diagnostic
+
+```
+
+```{r, GAM summary table}
+
+# Summary table:
+bain_gam_summary_table <- dplyr::bind_rows(
+  extract_gam_summary(
+    model = bain_richness_gam,
+    metric = "Species richness",
+    k_used = 20
+  ),
+  extract_gam_summary(
+    model = bain_shannon_gam,
+    metric = "Exponential Shannon diversity",
+    k_used = 14
+  ),
+  extract_gam_summary(
+    model = bain_evenness_gam,
+    metric = "Evenness",
+    k_used = 18
+  )
+)
+
+bain_gam_summary_table
+
+# Round for readability:
+bain_gam_summary_table <- bain_gam_summary_table %>%
+  dplyr::mutate(
+    dplyr::across(
+      where(is.numeric),
+      ~ round(.x, 4)
+    )
+  )
+
+bain_gam_summary_table
+
+```
+
+# ----------------------------------------------------
+## Combined visualisation ##
+# ----------------------------------------------------
+
+# Homemade functions
+
+```{r}
+
+# Helper function to standardise model predictions:
+standardise_prediction_df <- function(df,
+                                      lake_name,
+                                      metric_name,
+                                      model_name,
+                                      age_col = "age_mid",
+                                      fit_col = "metric_fit",
+                                      lower_col = "metric_lower",
+                                      upper_col = "metric_upper",
+                                      se_col = "metric_se") {
+  
+  df %>%
+    dplyr::transmute(
+      lake = lake_name,
+      metric = metric_name,
+      model = model_name,
+      age_mid = .data[[age_col]],
+      fit = as.numeric(.data[[fit_col]]),
+      lower = as.numeric(.data[[lower_col]]),
+      upper = as.numeric(.data[[upper_col]]),
+      se = as.numeric(.data[[se_col]])
+    )
+}
+
+# Helper function for dual-axis rescaling:
+rescale_to_primary <- function(x, primary_range, secondary_range) {
+  (x - secondary_range[1]) / diff(secondary_range) * diff(primary_range) + primary_range[1]
+}
+
+inverse_to_secondary <- function(x, primary_range, secondary_range) {
+  (x - primary_range[1]) / diff(primary_range) * diff(secondary_range) + secondary_range[1]
+}
+
+# Plot function:
+plot_gam_segmented_dual_axis <- function(df, metric_name, lake_name,
+                                         gam_range,
+                                         seg_range,
+                                         x_limits = c(7600, 0)) {
+  
+  plot_df <- df %>%
+    filter(metric == metric_name,
+           lake == lake_name) %>%
+    mutate(
+      seg_observed_scaled = rescale_to_primary(
+        seg_observed,
+        primary_range = gam_range,
+        secondary_range = seg_range
+      ),
+      seg_fit_scaled = rescale_to_primary(
+        seg_fit,
+        primary_range = gam_range,
+        secondary_range = seg_range
+      ),
+      seg_lower_scaled = rescale_to_primary(
+        seg_lower,
+        primary_range = gam_range,
+        secondary_range = seg_range
+      ),
+      seg_upper_scaled = rescale_to_primary(
+        seg_upper,
+        primary_range = gam_range,
+        secondary_range = seg_range
+      )
+    )
+  
+  ggplot(plot_df, aes(x = age_mid)) +
+    
+    # GAM uncertainty
+    geom_ribbon(
+      aes(ymin = gam_lower, ymax = gam_upper),
+      alpha = 0.18,
+      fill = "grey60"
+    ) +
+    
+    # Segmented uncertainty, rescaled to GAM axis
+    geom_ribbon(
+      aes(ymin = seg_lower_scaled, ymax = seg_upper_scaled),
+      alpha = 0.12,
+      fill = "grey30"
+    ) +
+    
+    # GAM fitted line
+    geom_line(
+      aes(y = gam_fit),
+      linewidth = 1.1,
+      color = "black"
+    ) +
+    
+    # Segmented fitted line, rescaled
+    geom_line(
+      aes(y = seg_fit_scaled),
+      linewidth = 1.1,
+      linetype = "dashed",
+      color = "black"
+    ) +
+    
+    # GAM observed values: full points
+    geom_point(
+      aes(y = gam_observed),
+      size = 2.2,
+      alpha = 0.85,
+      shape = 16
+    ) +
+    
+    # Segmented observed values: empty points, rescaled
+    geom_point(
+      aes(y = seg_observed_scaled),
+      size = 2.3,
+      alpha = 0.85,
+      shape = 21,
+      stroke = 0.8,
+      fill = "white"
+    ) +
+    
+    scale_x_reverse(
+      limits = x_limits,
+      breaks = scales::pretty_breaks(n = 5)
+    ) +
+    
+    scale_y_continuous(
+      limits = gam_range,
+      name = "GAM estimate",
+      sec.axis = sec_axis(
+        trans = ~ inverse_to_secondary(
+          .,
+          primary_range = gam_range,
+          secondary_range = seg_range
+        ),
+        name = "Segmented estimate"
+      )
+    ) +
+    
+    labs(
+      title = lake_name,
+      x = "Age (cal yr BP)"
+    ) +
+    
+    theme_classic(base_size = 13) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      axis.title.y.left = element_text(color = "black"),
+      axis.title.y.right = element_text(color = "black")
+    )
+}
+
+```
+
+# ------- Baiau Superior & Baiau Inferior -------
+
+# Standardised combined data frame 
+
+```{r, Baiau Superior}
+
+# -------------------- Create a common age grid for Baiau Superior ------------------------
+
+# Required data frames:
+baiau.sup.df <- read.csv("Select your directory/Unified_raw_dataframes/baiau_superior_raw_unified_data_frame.csv", sep = ";")
+baiau.sup.estimates.no_hiatus.df <- read.csv("Select your directory/Without_paraconformity/baiau.sup.estimates.no_hiatus.df.csv", sep = ";")
+
+age_grid <- tibble(
+  age_mid = seq(
+    from = min(
+      c(
+        baiau.sup.estimates.no_hiatus.df$age_mid,
+        baiau.sup.df$mean.age
+      ),
+      na.rm = TRUE
+    ),
+    to = max(
+      c(
+        baiau.sup.estimates.no_hiatus.df$age_mid,
+        baiau.sup.df$mean.age
+      ),
+      na.rm = TRUE
+    ),
+    length.out = 400
+  )
+) %>%
+  mutate(
+    mean.age = age_mid
+  )
+
+# -------------------- Extract CI from the models ------------------------
+
+#Species richness:
+ba_richness_gam_pred <- predict(       #  Generalised Additive Model
+  ba_richness_gam,
+  newdata = age_grid,
+  se.fit = TRUE
+)
+
+ba_richness_gam_fit <- age_grid %>%
+  mutate(
+    metric_fit = as.numeric(ba_richness_gam_pred$fit),
+    metric_se = as.numeric(ba_richness_gam_pred$se.fit),
+    metric_lower = metric_fit - 1.96 * metric_se,
+    metric_upper = metric_fit + 1.96 * metric_se
+  )
+
+ba_richness_seg_pred <- predict(    # Segmented model
+  ba.richness.seg,
+  newdata = age_grid,
+  se.fit = TRUE
+)
+
+ba_richness_fit <- age_grid %>%
+  mutate(
+    metric_fit = as.numeric(ba_richness_seg_pred$fit),
+    metric_se = as.numeric(ba_richness_seg_pred$se.fit),
+    metric_lower = metric_fit - 1.96 * metric_se,
+    metric_upper = metric_fit + 1.96 * metric_se
+  )
+
+# Exp. Shannon diversity:
+ba_shannon_gam_pred <- predict(       #  Generalised Additive Model
+  ba_shannon_gam,
+  newdata = age_grid,
+  se.fit = TRUE
+)
+
+ba_shannon_gam_fit <- age_grid %>%
+  mutate(
+    metric_fit = as.numeric(ba_shannon_gam_pred$fit),
+    metric_se = as.numeric(ba_shannon_gam_pred$se.fit),
+    metric_lower = metric_fit - 1.96 * metric_se,
+    metric_upper = metric_fit + 1.96 * metric_se
+  )
+ 
+ba_shannon_seg_pred <- predict(        # Segmented model
+  ba.shannon.seg,
+  newdata = age_grid,
+  se.fit = TRUE
+)
+
+ba_shannon_fit <- age_grid %>%
+  mutate(
+    metric_fit = as.numeric(ba_shannon_seg_pred$fit),
+    metric_se = as.numeric(ba_shannon_seg_pred$se.fit),
+    metric_lower = metric_fit - 1.96 * metric_se,
+    metric_upper = metric_fit + 1.96 * metric_se
+  )
+
+# Evenness (Pielou's J):
+ba_evenness_gam_pred <- predict(       #  Generalised Additive Model
+  ba_evenness_gam,
+  newdata = age_grid,
+  se.fit = TRUE
+)
+
+ba_evenness_gam_fit <- age_grid %>%
+  mutate(
+    metric_fit = as.numeric(ba_evenness_gam_pred$fit),
+    metric_se = as.numeric(ba_evenness_gam_pred$se.fit),
+    metric_lower = metric_fit - 1.96 * metric_se,
+    metric_upper = metric_fit + 1.96 * metric_se
+  )
+
+ba_evenness_seg_pred <- predict(                # (Non-)Segmented model; Actually, predictions come from a linear model!
+  ba.evenness.lm,
+  newdata = age_grid,
+  se.fit = TRUE
+)
+
+ba_evenness_fit <- age_grid %>%
+  mutate(
+    metric_fit = as.numeric(ba_evenness_seg_pred$fit),
+    metric_se = as.numeric(ba_evenness_seg_pred$se.fit),
+    metric_lower = metric_fit - 1.96 * metric_se,
+    metric_upper = metric_fit + 1.96 * metric_se
+  )
+
+# -------------------- Standardise predictions -----------------------
+
+# Species richness:
+ba_richness_seg_std <- standardise_prediction_df(    # Segmented model
+  df = ba_richness_fit,
+  lake_name = "Baiau Superior",
+  metric_name = "Species richness",
+  model_name = "Segmented"
+)
+
+ba_richness_gam_std <- standardise_prediction_df(    # Generalised Additive Model
+  df = ba_richness_gam_fit,
+  lake_name = "Baiau Superior",
+  metric_name = "Species richness",
+  model_name = "GAM"
+)
+
+# Exp. Shannon diversity:
+ba_shannon_seg_std <- standardise_prediction_df(    # Segmented model
+  df = ba_shannon_fit,
+  lake_name = "Baiau Superior",
+  metric_name = "Exp.shannon",
+  model_name = "Segmented"
+)
+
+ba_shannon_gam_std <- standardise_prediction_df(    # Generalised Additive Model
+  df = ba_shannon_gam_fit,
+  lake_name = "Baiau Superior",
+  metric_name = "Exp.shannon",
+  model_name = "GAM"
+)
+
+# Evenness (Pielou's J):
+ba_evenness_seg_std <- standardise_prediction_df(    # Segmented model
+  df = ba_evenness_fit,
+  lake_name = "Baiau Superior",
+  metric_name = "Evenness",
+  model_name = "Segmented"
+)
+
+ba_evenness_gam_std <- standardise_prediction_df(    # Generalised Additive Model
+  df = ba_evenness_gam_fit,
+  lake_name = "Baiau Superior",
+  metric_name = "Evenness",
+  model_name = "GAM"
+)
+
+
+# Join the three metrics:
+ba_estimates_models <- dplyr::bind_rows(
+  ba_richness_gam_std,
+  ba_richness_seg_std,
+  ba_shannon_gam_std,
+  ba_shannon_seg_std,
+  ba_evenness_gam_std,
+  ba_evenness_seg_std
+)
+
+# -------------------- Data frame with observed values -----------------------
+
+# Species richness:
+ba_richness_obs <- baiau.sup.estimates.no_hiatus.df %>%
+  dplyr::transmute(
+    lake = "Baiau Superior",
+    metric = "Species richness",
+    age_mid = age_mid,
+    observed = Hill.spp.rich
+  )
+
+# Exp. Shannon diversity:
+ba_shannon_obs <- baiau.sup.estimates.no_hiatus.df %>%
+  dplyr::transmute(
+    lake = "Baiau Superior",
+    metric = "Exp.shannon",
+    age_mid = age_mid,
+    observed = exp.shannon
+  )
+
+# Evenness (Pielou's J):
+ba_evenness_obs <- baiau.sup.estimates.no_hiatus.df %>%
+  dplyr::transmute(
+    lake = "Baiau Superior",
+    metric = "Evenness",
+    age_mid = age_mid,
+    observed = pielou
+  )
+
+# Join the observed values per metric:
+ba_estimates_obs <- dplyr::bind_rows(
+  ba_richness_obs,
+  ba_shannon_obs,
+  ba_evenness_obs
+)
+
+```
+
+```{r, Baiau Inferior}
+
+# -------------------- Create a common age grid for Baiau Inferior ------------------------
+
+# Required data frames:
+baiau.inf.df <- read.csv("Select your directory/Unified_raw_dataframes/baiau_inferior_raw_unified_data_frame.csv", sep = ";")
+baiau.inf.estimates.no_hiatus.df <- read.csv("Select your directory/Without_paraconformity/baiau.inf.estimates.no_hiatus.df.csv", sep = ";")
+
+age_grid <- tibble(
+  age_mid = seq(
+    from = min(
+      c(
+        baiau.inf.estimates.no_hiatus.df$age_mid,
+        baiau.inf.df$mean.age
+      ),
+      na.rm = TRUE
+    ),
+    to = max(
+      c(
+        baiau.inf.estimates.no_hiatus.df$age_mid,
+        baiau.inf.df$mean.age
+      ),
+      na.rm = TRUE
+    ),
+    length.out = 400
+  )
+) %>%
+  mutate(
+    mean.age = age_mid
+  )
+
+# -------------------- Extract CI from the models ------------------------
+
+#Species richness:
+bain_richness_gam_pred <- predict(       #  Generalised Additive Model
+  bain_richness_gam,
+  newdata = age_grid,
+  se.fit = TRUE
+)
+
+bain_richness_gam_fit <- age_grid %>%
+  mutate(
+    metric_fit = as.numeric(bain_richness_gam_pred$fit),
+    metric_se = as.numeric(bain_richness_gam_pred$se.fit),
+    metric_lower = metric_fit - 1.96 * metric_se,
+    metric_upper = metric_fit + 1.96 * metric_se
+  )
+
+bain_richness_seg_pred <- predict(    # Segmented model
+  bain.richness.seg,
+  newdata = age_grid,
+  se.fit = TRUE
+)
+
+bain_richness_fit <- age_grid %>%
+  mutate(
+    metric_fit = as.numeric(bain_richness_seg_pred$fit),
+    metric_se = as.numeric(bain_richness_seg_pred$se.fit),
+    metric_lower = metric_fit - 1.96 * metric_se,
+    metric_upper = metric_fit + 1.96 * metric_se
+  )
+
+# Exp. Shannon diversity:
+bain_shannon_gam_pred <- predict(       #  Generalised Additive Model
+  bain_shannon_gam,
+  newdata = age_grid,
+  se.fit = TRUE
+)
+
+bain_shannon_gam_fit <- age_grid %>%
+  mutate(
+    metric_fit = as.numeric(bain_shannon_gam_pred$fit),
+    metric_se = as.numeric(bain_shannon_gam_pred$se.fit),
+    metric_lower = metric_fit - 1.96 * metric_se,
+    metric_upper = metric_fit + 1.96 * metric_se
+  )
+ 
+bain_shannon_seg_pred <- predict(        # Segmented model
+  bain.shannon.seg,
+  newdata = age_grid,
+  se.fit = TRUE
+)
+
+bain_shannon_fit <- age_grid %>%
+  mutate(
+    metric_fit = as.numeric(bain_shannon_seg_pred$fit),
+    metric_se = as.numeric(bain_shannon_seg_pred$se.fit),
+    metric_lower = metric_fit - 1.96 * metric_se,
+    metric_upper = metric_fit + 1.96 * metric_se
+  )
+
+# Evenness (Pielou's J):
+bain_evenness_gam_pred <- predict(       #  Generalised Additive Model
+  bain_evenness_gam,
+  newdata = age_grid,
+  se.fit = TRUE
+)
+
+bain_evenness_gam_fit <- age_grid %>%
+  mutate(
+    metric_fit = as.numeric(bain_evenness_gam_pred$fit),
+    metric_se = as.numeric(bain_evenness_gam_pred$se.fit),
+    metric_lower = metric_fit - 1.96 * metric_se,
+    metric_upper = metric_fit + 1.96 * metric_se
+  )
+
+bain_evenness_seg_pred <- predict(                # (Non-)Segmented model; Actually, predictions come from a linear model!
+  bain.evenness.lm,
+  newdata = age_grid,
+  se.fit = TRUE
+)
+
+bain_evenness_fit <- age_grid %>%
+  mutate(
+    metric_fit = as.numeric(bain_evenness_seg_pred$fit),
+    metric_se = as.numeric(bain_evenness_seg_pred$se.fit),
+    metric_lower = metric_fit - 1.96 * metric_se,
+    metric_upper = metric_fit + 1.96 * metric_se
+  )
+
+# -------------------- Standardise predictions -----------------------
+
+# Species richness:
+bain_richness_seg_std <- standardise_prediction_df(    # Segmented model
+  df = bain_richness_fit,
+  lake_name = "Baiau Inferior",
+  metric_name = "Species richness",
+  model_name = "Segmented"
+)
+
+bain_richness_gam_std <- standardise_prediction_df(    # Generalised Additive Model
+  df = bain_richness_gam_fit,
+  lake_name = "Baiau Inferior",
+  metric_name = "Species richness",
+  model_name = "GAM"
+)
+
+# Exp. Shannon diversity:
+bain_shannon_seg_std <- standardise_prediction_df(    # Segmented model
+  df = bain_shannon_fit,
+  lake_name = "Baiau Inferior",
+  metric_name = "Exp.shannon",
+  model_name = "Segmented"
+)
+
+bain_shannon_gam_std <- standardise_prediction_df(    # Generalised Additive Model
+  df = bain_shannon_gam_fit,
+  lake_name = "Baiau Inferior",
+  metric_name = "Exp.shannon",
+  model_name = "GAM"
+)
+
+# Evenness (Pielou's J):
+bain_evenness_seg_std <- standardise_prediction_df(    # Segmented model
+  df = bain_evenness_fit,
+  lake_name = "Baiau Inferior",
+  metric_name = "Evenness",
+  model_name = "Segmented"
+)
+
+bain_evenness_gam_std <- standardise_prediction_df(    # Generalised Additive Model
+  df = bain_evenness_gam_fit,
+  lake_name = "Baiau Inferior",
+  metric_name = "Evenness",
+  model_name = "GAM"
+)
+
+
+# Join the three metrics:
+bain_estimates_models <- dplyr::bind_rows(
+  bain_richness_gam_std,
+  bain_richness_seg_std,
+  bain_shannon_gam_std,
+  bain_shannon_seg_std,
+  bain_evenness_gam_std,
+  bain_evenness_seg_std
+)
+
+# -------------------- Data frame with observed values -----------------------
+
+# Species richness:
+bain_richness_obs <- baiau.inf.estimates.no_hiatus.df %>%
+  dplyr::transmute(
+    lake = "Baiau Inferior",
+    metric = "Species richness",
+    age_mid = age_mid,
+    observed = Hill.spp.rich
+  )
+
+# Exp. Shannon diversity:
+bain_shannon_obs <- baiau.inf.estimates.no_hiatus.df %>%
+  dplyr::transmute(
+    lake = "Baiau Inferior",
+    metric = "Exp.shannon",
+    age_mid = age_mid,
+    observed = exp.shannon
+  )
+
+# Evenness (Pielou's J):
+bain_evenness_obs <- baiau.inf.estimates.no_hiatus.df %>%
+  dplyr::transmute(
+    lake = "Baiau Inferior",
+    metric = "Evenness",
+    age_mid = age_mid,
+    observed = pielou
+  )
+
+# Join the observed values per metric:
+bain_estimates_obs <- dplyr::bind_rows(
+  bain_richness_obs,
+  bain_shannon_obs,
+  bain_evenness_obs
+)
+
+```
+
+# Combined dataframes with predictions & observations
+
+# Combined plot
+
+```{r, Baiau Superior & Baiau Inferior}
+
+# --------------- Estimates from models -----------------
+
+# Create a combined data frame across lakes:
+baiau_estimates_models_all <- dplyr::bind_rows(
+  ba_estimates_models,
+  bain_estimates_models
+)
+
+# --------------- Observations -----------------
+
+# Combined data frame with observed values per metric and lake:
+baiau_estimates_obs <- dplyr::bind_rows(
+  ba_estimates_obs,
+  bain_estimates_obs
+)
+
+```
+
+```{r}
+
+# ---------------- Arrangements ------------------
+
+# Into factor type:
+baiau_estimates_models_all <- baiau_estimates_models_all %>%
+  mutate(
+    metric = factor(
+      metric,
+      levels = c("Exp.shannon", "Species richness", "Evenness")
+    )
+  )
+
+baiau_estimates_models_all <- baiau_estimates_models_all %>%
+  mutate(
+    lake = factor(lake, levels = c("Baiau Superior", "Baiau Inferior"))
+  )
+
+baiau_estimates_obs <- baiau_estimates_obs %>%
+  mutate(
+    metric = factor(
+      metric,
+      levels = c("Exp.shannon", "Species richness", "Evenness")
+    )
+  )
+
+baiau_estimates_obs <- baiau_estimates_obs %>%
+  mutate(
+    lake = factor(lake, levels = c("Baiau Superior", "Baiau Inferior"))
+  )
+
+# Set the a common y-axis range of values:
+diversity_y_ranges <- bind_rows(  
+  baiau_estimates_obs %>%
+    transmute(metric, value = observed),
+
+  baiau_estimates_models_all %>%
+    transmute(metric, value = lower),
+
+  baiau_estimates_models_all %>%
+    transmute(metric, value = upper)
+) %>%
+  group_by(metric) %>%
+  summarise(
+    minimum = min(value, na.rm = TRUE),
+    maximum = max(value, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+diversity_y_ranges     # Inspect the min and max values for each diversity estimate
+
+# Create a table with the range of values:     Taken into account the exclusion and inclusion of the paraconformity!
+y_limits <- tibble(
+  metric = factor(
+    c("Exp.shannon", "Species richness", "Evenness"),
+    levels = c("Exp.shannon", "Species richness", "Evenness")
+  ),
+  ymin = c(6.7, 20.4, 0.18),
+  ymax = c(34.0, 85.2, 0.57)
+)
+
+# ---------------- Plot ------------------
+
+# Using different colours for each model: I used this one, for now
+baiau_figs_b_d <- ggplot() +
+  
+  geom_blank(
+    data = y_limits,
+    aes(y = ymin),
+    inherit.aes = FALSE
+  ) +
+  geom_blank(
+    data = y_limits,
+    aes(y = ymax),
+    inherit.aes = FALSE
+  ) +
+  
+  # GAM CI
+  geom_ribbon(
+    data = baiau_estimates_models_all %>% 
+      filter(model == "GAM"),
+    aes(
+      x = age_mid,
+      ymin = lower,
+      ymax = upper
+    ),
+    fill = "grey70",
+    alpha = 0.25,
+    color = NA
+  ) +
+  
+  # Segmented CI
+  geom_ribbon(
+    data = baiau_estimates_models_all %>% 
+      filter(model == "Segmented"),
+    aes(
+      x = age_mid,
+      ymin = lower,
+      ymax = upper
+    ),
+    fill = "indianred1",
+    alpha = 0.18,
+    color = NA
+  ) +
+  
+  # GAM line
+  geom_line(
+    data = baiau_estimates_models_all %>% 
+      filter(model == "GAM"),
+    aes(
+      x = age_mid,
+      y = fit,
+      colour = model
+    ),
+    linewidth = 1
+  ) +
+  
+  # Segmented line
+  geom_line(
+    data = baiau_estimates_models_all %>% 
+      filter(model == "Segmented"),
+    aes(
+      x = age_mid,
+      y = fit,
+      colour = model
+    ),
+    linewidth = 1,
+    linetype = "solid"
+  ) +
+  
+  # Observed values
+  geom_point(
+    data = baiau_estimates_obs,
+    aes(
+      x = age_mid,
+      y = observed
+    ),
+    size = 1.8,
+    alpha = 0.4,
+    colour = "black"
+  ) +
+  
+  scale_x_reverse(
+    name = "Age (cal yr BP)",
+    breaks = scales::pretty_breaks(n = 5)
+  ) +
+  
+  scale_colour_manual(
+    values = c(
+      "GAM" = "black",
+      "Segmented" = "darkred"
+    )
+  ) +
+  
+  labs(
+    y = "Estimate",
+    colour = "Model"
+  ) +
+  
+  facet_grid(
+    metric ~ lake,
+    scales = "free_y",
+    labeller = labeller(
+      metric = c(
+        "Species richness" = "Species richness",
+        "Exp.shannon" = "Exp. Shannon",
+        "Evenness" = "Evenness"
+      )
+    )
+  ) +
+  
+  theme_bw(base_size = 13) +
+  theme(
+    aspect.ratio = 1,
+    panel.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 16),
+    axis.ticks = element_line(linewidth = 0.8),
+    axis.ticks.length = unit(0.25, "cm"),
+    strip.background = element_blank(),
+    strip.text.x = element_text(size = 18, face = "bold"),
+    strip.text.y = element_text(size = 16),
+    legend.position = "bottom"
+  )
+
+baiau_figs_b_d
+
+```

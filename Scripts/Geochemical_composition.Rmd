@@ -1,0 +1,181 @@
+---
+title: "XRF - Geochemical plot"
+author: "Daniel_Martín"
+date: "2026-09-30"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+# ----------------
+## Packages ##
+# ----------------
+
+```{r, message = FALSE}
+
+library(tidyverse)
+library(ggplot2)
+library(tidypaleo) 
+
+```
+
+# --------------------
+## Tidypaleo graphs ##
+# --------------------
+
+# ------- Baiau Superior --------
+
+```{r, Pre-treatment}
+
+# Initial long-format data frame (raw data):
+ba_sup_raw_df <- read.csv("Select your directory/Unified_raw_dataframes/baiau_superior_raw_unified_data_frame.csv", sep = ";")
+
+ba_sup_xrf <- ba_sup_raw_df %>%
+    distinct(sample, .keep_all = TRUE) %>% 
+    select(-location, -zone, -No, -Species_ID, -Inc, -Coh, -perc.C, -perc.N, -d15N, -d13C) 
+
+# Into long format:
+ba_sup_xrf_long <- ba_sup_xrf %>%
+  pivot_longer(cols = Al:Pb, names_to = "parameter", values_to = "values") %>% 
+  arrange(parameter)
+
+# Weighted average for Baiau Superior:
+ba.element.wa <- ba_sup_xrf_long %>% 
+  group_by(parameter) %>%
+  summarise(weighted.avg.depth = weighted.mean(mean.depth, w = values, na.rm = TRUE)) %>% 
+  arrange(weighted.avg.depth)
+
+#Baiau Superior:
+ba_sup_xrf_long <- ba_sup_xrf_long %>% 
+  mutate(element = factor(parameter, levels = ba.element.wa$parameter))
+
+```
+
+```{r, Tidyplots}
+
+# Plot without the age:
+ba.xrf.tp <- ba_sup_xrf_long %>% #The data frame containing the weighted average ordering.
+  ggplot(aes(x = values, y = mean.depth)) +
+  geom_lineh() +
+  geom_point(size = 0.5) +
+  scale_y_reverse() +
+  facet_geochem_gridh(vars(element), scales = "free") +
+  labs(
+    x = "Counts per second", 
+    y = "Depth (cm)", 
+    title = "Baiau Superior"
+    ) +
+  theme_bw() +
+  theme(
+    panel.background = element_blank(), #Remove panel background.
+    panel.grid.major = element_blank(), #Remove major gridlines.
+    panel.grid.minor = element_blank(), #Remove minor gridlines.
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    plot.title = element_text(size = 20, face = "bold")
+  )
+ba.xrf.tp
+
+# --------- Adding the age -----------
+
+# Dataframes with the ages (generated with rbacon package for the subsampling resolution):
+ba21_ages <- read.csv("Select your directory/Ages_tidypaleo/ba_ages_tidypaleo.csv", header = TRUE, sep = ";")
+
+# Baiau Superior's age model:
+ba_age_depth <- age_depth_model(.data = ba21_ages, #Nombre de la dataframe con las profundidades y las edades
+                         depth = ba21_ages$depth, #Nombre de la columna de profundidades
+                         age = ba21_ages$mean, #Nombre de la columna de edades medias
+                         age_min = ba21_ages$min, #Nombre de la columna de error mínimo
+                         age_max = ba21_ages$max #Nombre de la columna de error máximo
+                         )
+
+# With the age:
+ba.xrf.tp.age <- ba.xrf.tp +
+  scale_y_depth_age(ba_age_depth, age_name = "Age (cal yr BP)")
+
+ba.xrf.tp.age
+
+```
+
+# ------- Baiau Inferior --------
+
+```{r, Pre-treatment}
+
+# Initial long-format data frame (raw data):
+ba_inf_raw_df <- read.csv("Select your directory/Unified_raw_dataframes/baiau_inferior_raw_unified_data_frame.csv", sep = ";")
+
+ba_inf_xrf <- ba_inf_raw_df %>%
+    distinct(sample, .keep_all = TRUE) %>% 
+    select(-location, -zone, -No, -Species_ID, -Inc, -Coh, -perc.C, -perc.N, -d15N, -d13C) 
+
+# To remove the first 6 samples only from Baiau Inferior (just in case):
+ba_inf_xrf <- ba_inf_xrf[-c(1:6), ] #There're no XRF data. I want to explore the element tendencies without the 0 values. Update: It's basically the same.
+
+# To remove the last 2 samples only from Baiau Inferior (just in case):
+ba_inf_xrf <- ba_inf_xrf[-c(116, 117), ] #There're no XRF data.
+
+# Into long format:
+ba_inf_xrf_long <- ba_inf_xrf %>%
+  pivot_longer(cols = Al:Pb, names_to = "parameter", values_to = "values") %>% 
+  arrange(parameter)
+
+# Weighted average for Baiau Superior:
+bain.element.wa <- ba_inf_xrf_long %>% 
+  group_by(parameter) %>%
+  summarise(weighted.avg.depth = weighted.mean(mean.depth, w = values, na.rm = TRUE)) %>% 
+  arrange(weighted.avg.depth)
+
+#Baiau Superior:
+ba_inf_xrf_long <- ba_inf_xrf_long %>% 
+  mutate(element = factor(parameter, levels = bain.element.wa$parameter))
+
+```
+
+```{r, Tidypaleo}
+
+# Plot without the age:
+bain.xrf.tp <- ba_inf_xrf_long %>% #The data frame containing the weighted average ordering.
+  ggplot(aes(x = values, y = mean.depth)) +
+  geom_lineh() +
+  geom_point(size = 0.5) +
+  scale_y_reverse() +
+  facet_geochem_gridh(vars(element), scales = "free") + #The 'element' column sorts by the weighted averaging. 
+  labs(
+    x = "Counts per second", 
+       y = "Depth (cm)", 
+       title = "Baiau Inferior"
+    ) +
+  theme_bw() +
+  theme(
+    panel.background = element_blank(), #Remove panel background.
+    panel.grid.major = element_blank(), #Remove major gridlines.
+    panel.grid.minor = element_blank(), #Remove minor gridlines.
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    plot.title = element_text(size = 20, face = "bold")
+  )
+
+bain.xrf.tp
+
+# --------- Adding the age -----------
+
+# Dataframes with the ages (generated with rbacon package; see above):
+bain21_ages <- read.csv("Select your directory/Ages_tidypaleo/bain_ages_tidypaleo.csv", header = TRUE, sep = ";")
+
+# Baiau Superior's age model:
+bain_age_depth <- age_depth_model(.data = bain21_ages, #Nombre de la dataframe con las profundidades y las edades
+                         depth = bain21_ages$depth, #Nombre de la columna de profundidades
+                         age = bain21_ages$mean, #Nombre de la columna de edades medias
+                         age_min = bain21_ages$min, #Nombre de la columna de error mínimo
+                         age_max = bain21_ages$max #Nombre de la columna de error máximo
+                         )
+
+# With the age:
+bain.xrf.tp.age <- bain.xrf.tp +
+  scale_y_depth_age(bain_age_depth, age_name = "Age (cal yr BP)")
+
+bain.xrf.tp.age
+
+```

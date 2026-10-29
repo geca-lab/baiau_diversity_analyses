@@ -1,0 +1,781 @@
+---
+title: "Fig. 2 - Nitrogen vs. Assemblage novelty"
+author: "Daniel_Martín"
+date: "2026-10-02"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+# ----------------
+## Packages ##
+# ----------------
+
+```{r}
+
+library(dplyr)
+library(mgcv)
+library(gratia)
+library(ggplot2)
+
+```
+
+# -------------------------------------------------
+## Temporal trend of d15N vs. Assemblage novelty ##
+# -------------------------------------------------
+
+# ----- Fit Generalised Additive Models -----
+
+# Homemade function
+
+```{r}
+
+# Homemade function to evaluate 'k':
+evaluate_gam_k <- function(data, response, predictor, weight_var) {
+  library(mgcv)
+  
+  results <- data.frame(
+    k = integer(),
+    edf = numeric(),
+    k_index = numeric(),
+    p_value = numeric(),
+    stringsAsFactors = FALSE
+  )
+  
+  formula_base <- paste(response, "~ s(", predictor, ", bs='tp', k=%d)", sep = "")
+  weights <- data[[weight_var]] / mean(data[[weight_var]], na.rm = TRUE)
+  
+  for (k_val in 2:100) {
+    cat("Fitting model with k =", k_val, "\n")
+    
+    model_formula <- as.formula(sprintf(formula_base, k_val))
+    
+    fit <- tryCatch(
+      gam(model_formula, data = data, family = gaussian, method = "REML", weights = weights),
+      error = function(e) {
+        cat("Model failed for k =", k_val, "\n")
+        return(NULL)
+      }
+    )
+    
+    if (!is.null(fit)) {
+      kcheck <- tryCatch(
+        mgcv::k.check(fit),
+        error = function(e) {
+          cat("k.check failed for k =", k_val, "\n")
+          return(NULL)
+        }
+      )
+      
+      if (!is.null(kcheck)) {
+        edf_val <- sum(fit$edf)
+        k_index <- kcheck[1, "k-index"]
+        p_val <- kcheck[1, "p-value"]
+        
+        results <- rbind(results, data.frame(
+          k = k_val,
+          edf = edf_val,
+          k_index = k_index,
+          p_value = p_val
+        ))
+      } else {
+        cat("No k.check returned for k =", k_val, "\n")
+      }
+    }
+  }
+  
+  return(results)
+}
+
+```
+
+```{r, Baiau Superior}
+
+# Data frames:
+ba_raw_df <- read.csv("Select your directory/Unified_raw_dataframes/baiau_superior_raw_unified_data_frame.csv", sep = ";") 
+ba_fp_beta_accum_q0 <- read.csv("Select your directory/Assemblage_novelty/ba_cumulative_beta_q0_sc98_nboot500.csv", sep = ";") # Assemblage novelty
+
+# -------- Nitrogen --------
+
+ba_raw_df <- ba_raw_df %>% 
+  select(-Species_ID, -No) %>% 
+  distinct(sample, .keep_all = TRUE)
+
+ba_d15n_gam <- gam(d15N ~ s(mean.age, k = 32),
+  data = ba_raw_df,
+  family = "gaussian",
+  method = "REML",
+  weights = age.interval/mean(age.interval)) # Temporal-resolution weighting.
+
+summary(ba_d15n_gam)
+acf(residuals(ba_d15n_gam), main = "Autocorrelation of residuals") # Check for autocorrelation in the residuals
+gam.check(ba_d15n_gam, rep = 500) 
+appraise(ba_d15n_gam, method = 'simulate')
+
+# -------- Assemblage novelty --------
+
+ba.beta.accum.gam.table <- evaluate_gam_k(            # Compute all the models for choosing a suitable 'k'
+  data = ba_fp_beta_accum_q0,
+  response = "beta_q0",
+  predictor = "mean.age",
+  weight_var = "age.interval")
+
+ba_accum_q0_gam <- gam(
+  beta_q0 ~ s(mean.age, k = 16),
+  data = ba_fp_beta_accum_q0,
+  family = gaussian,
+  method = "REML",
+  weights = age.interval/mean(age.interval)
+)
+
+acf(residuals(ba_accum_q0_gam), main = "Autocorrelation of residuals")
+gam.check(ba_accum_q0_gam)
+ba_accum_q0_kcheck <- k.check(ba_accum_q0_gam)  # Generate a clean table to export
+ba_accum_q0_kcheck
+
+ba_assemblage_novelty_diagnostic <- appraise(ba_accum_q0_gam, method = 'simulate') +      #'gratia' package.
+ plot_annotation(
+  title = "Baiau Superior - Assemblage novelty"
+  ) &
+  theme(
+    plot.title = element_text(size = 20, face = "bold")
+  )
+ba_assemblage_novelty_diagnostic
+
+# Summary table:
+ba_accum_q0_gam_table <- tibble(
+  Model = "Cumulative assemblage differentiation",
+  Response = "beta_q0",
+  Predictor = "mean.age",
+  Basis = "tp",
+  k = 16,
+  edf = ba_accum_q0_gam_summary$s.table[1, "edf"],
+  Ref_df = ba_accum_q0_gam_summary$s.table[1, "Ref.df"],
+  F = ba_accum_q0_gam_summary$s.table[1, "F"],
+  p_value = ba_accum_q0_gam_summary$s.table[1, "p-value"],
+  Adj_r2 = ba_accum_q0_gam_summary$r.sq,
+  Dev_exp = ba_accum_q0_gam_summary$dev.expl,
+  k_index = ba_accum_q0_kcheck[1, "k-index"],
+  k_p_value = ba_accum_q0_kcheck[1, "p-value"]
+)
+
+ba_accum_q0_gam_table
+
+```
+
+```{r, Baiau Inferior}
+
+# Data frames:
+bain_raw_df <- read.csv("Select your directory/Unified_raw_dataframes/baiau_inferior_raw_unified_data_frame.csv", sep = ";")
+bain_fp_beta_accum_q0 <- read.csv("Select your directory/Assemblage_novelty/bain_cumulative_beta_q0_sc98_nboot500.csv", sep = ";") # Assemblage novelty
+
+# -------- Nitrogen --------
+
+# Nitrogen:
+bain_raw_df <- bain_raw_df %>% 
+  select(-Species_ID, -No) %>% 
+  distinct(sample, .keep_all = TRUE)
+
+bain_d15n_gam <- gam(d15N ~ s(mean.age, k = 13),
+  data = bain_raw_df,
+  family = "gaussian",
+  method = "REML",
+  weights = age.interval/mean(age.interval)) # Temporal-resolution weighting.
+
+summary(bain_d15n_gam)
+acf(residuals(bain_d15n_gam), main = "Autocorrelation of residuals") # Check for autocorrelation in the residuals
+gam.check(bain_d15n_gam, rep = 500) 
+appraise(bain_d15n_gam, method = 'simulate')
+
+# -------- Assemblage novelty --------
+
+bain.beta.accum.gam.table <- evaluate_gam_k(            # Compute all the models for choosing a suitable 'k'
+  data = bain_fp_beta_accum_q0,
+  response = "beta_q0",
+  predictor = "mean.age",
+  weight_var = "age.interval")
+
+bain_accum_q0_gam <- gam(
+  beta_q0 ~ s(mean.age, k = 24),
+  data = bain_fp_beta_accum_q0,
+  family = gaussian,
+  method = "REML",
+  weights = age.interval/mean(age.interval)
+)
+
+acf(residuals(bain_accum_q0_gam), main = "Autocorrelation of residuals")
+gam.check(bain_accum_q0_gam)
+bain_accum_q0_kcheck <- k.check(bain_accum_q0_gam)  # Generate a clean table to export
+bain_accum_q0_kcheck
+
+bain_assemblage_novelty_diagnostic <- appraise(bain_accum_q0_gam, method = 'simulate') +      #'gratia' package.
+ plot_annotation(
+  title = "Baiau Inferior - Assemblage novelty"
+  ) &
+  theme(
+    plot.title = element_text(size = 20, face = "bold")
+  )
+bain_assemblage_novelty_diagnostic
+
+# Summary table:
+bain_accum_q0_gam_table <- tibble(
+  Model = "Cumulative assemblage differentiation",
+  Response = "beta_q0",
+  Predictor = "mean.age",
+  Basis = "tp",
+  k = 24,
+  edf = bain_accum_q0_gam_summary$s.table[1, "edf"],
+  Ref_df = bain_accum_q0_gam_summary$s.table[1, "Ref.df"],
+  F = bain_accum_q0_gam_summary$s.table[1, "F"],
+  p_value = bain_accum_q0_gam_summary$s.table[1, "p-value"],
+  Adj_r2 = bain_accum_q0_gam_summary$r.sq,
+  Dev_exp = bain_accum_q0_gam_summary$dev.expl,
+  k_index = bain_accum_q0_kcheck[1, "k-index"],
+  k_p_value = bain_accum_q0_kcheck[1, "p-value"]
+)
+
+bain_accum_q0_gam_table
+
+```
+
+# Re-scaling the y-axis
+
+```{r, Baiau Superior & Baiau Inferior}
+
+# ------------------------------------------------
+# ----- Calculate predictions for both lakes -----
+# ------------------------------------------------
+
+# In ggplot2, the secondary axis is not independent; it must be a mathematical transformation of the primary y-axis.
+
+# ---- Baiau Superior ----
+
+# Prediction grid:
+ba_d15n_pred <- data.frame(            # Nitrogen predictions
+  mean.age = seq(
+    min(ba_raw_df$mean.age, na.rm = TRUE),
+    max(ba_raw_df$mean.age, na.rm = TRUE),
+    length.out = 300
+  )
+)
+
+ba_accum_q0_pred <- tibble(           # Assemblage novelty predictions
+  mean.age = seq(
+    min(ba_fp_beta_accum_q0$mean.age, na.rm = TRUE),
+    max(ba_fp_beta_accum_q0$mean.age, na.rm = TRUE),
+    length.out = 300
+  )
+)
+
+# GAM predictions
+ba_d15n_fit <- predict(
+  ba_d15n_gam,
+  newdata = ba_d15n_pred,
+  se.fit = TRUE
+)
+
+ba_d15n_pred <- ba_d15n_pred %>%
+  mutate(
+    fit = ba_d15n_fit$fit,
+    se = ba_d15n_fit$se.fit,
+    lower = fit - 1.96 * se,
+    upper = fit + 1.96 * se
+  )
+
+
+ba_accum_q0_pred <- ba_accum_q0_pred %>%
+  bind_cols(
+    as_tibble(
+      predict(
+        ba_accum_q0_gam,
+        newdata = ba_accum_q0_pred,
+        se.fit = TRUE
+      )
+    )
+  ) %>%
+  mutate(
+    lower = fit - 1.96 * se.fit,
+    upper = fit + 1.96 * se.fit
+  )
+
+# ---- Baiau Inferior ----
+
+# Prediction grid:
+bain_d15n_pred <- data.frame(            # Nitrogen predictions
+  mean.age = seq(
+    min(bain_raw_df$mean.age, na.rm = TRUE),
+    max(bain_raw_df$mean.age, na.rm = TRUE),
+    length.out = 300
+  )
+)
+
+bain_accum_q0_pred <- tibble(           # Assemblage novelty predictions
+  mean.age = seq(
+    min(bain_fp_beta_accum_q0$mean.age, na.rm = TRUE),
+    max(bain_fp_beta_accum_q0$mean.age, na.rm = TRUE),
+    length.out = 300
+  )
+)
+
+# GAM predictions
+bain_d15n_fit <- predict(
+  bain_d15n_gam,
+  newdata = bain_d15n_pred,
+  se.fit = TRUE
+)
+
+bain_d15n_pred <- bain_d15n_pred %>%
+  mutate(
+    fit = bain_d15n_fit$fit,
+    se = bain_d15n_fit$se.fit,
+    lower = fit - 1.96 * se,
+    upper = fit + 1.96 * se
+  )
+
+
+bain_accum_q0_pred <- bain_accum_q0_pred %>%
+  bind_cols(
+    as_tibble(
+      predict(
+        bain_accum_q0_gam,
+        newdata = bain_accum_q0_pred,
+        se.fit = TRUE
+      )
+    )
+  ) %>%
+  mutate(
+    lower = fit - 1.96 * se.fit,
+    upper = fit + 1.96 * se.fit
+  )
+
+# --------------------------------------------------
+# ----- Calculate common ranges for both lakes -----
+# --------------------------------------------------
+
+# Common δ15N range across both lakes:
+d15n_range_common <- range(
+  ba_raw_df$d15N,
+  bain_raw_df$d15N,
+  ba_d15n_pred$lower,
+  ba_d15n_pred$upper,
+  bain_d15n_pred$lower,
+  bain_d15n_pred$upper,
+  na.rm = TRUE
+)
+
+# Common assemblage novelty range across both lakes:
+accum_range_common <- range(
+  ba_fp_beta_accum_q0$beta_q0,
+  bain_fp_beta_accum_q0$beta_q0,
+  ba_accum_q0_pred$lower,
+  ba_accum_q0_pred$upper,
+  bain_accum_q0_pred$lower,
+  bain_accum_q0_pred$upper,
+  na.rm = TRUE
+)
+
+# --------------------------------------------------
+# ----- Define common transformation functions -----
+# --------------------------------------------------
+
+# Assemblage novelty -> δ15N scale:
+accum_to_d15n_common <- function(x) {
+  (x - accum_range_common[1]) /
+    diff(accum_range_common) *
+    diff(d15n_range_common) +
+    d15n_range_common[1]
+}
+
+# δ15N scale -> assemblage novelty:
+d15n_to_accum_common <- function(x) {
+  (x - d15n_range_common[1]) /
+    diff(d15n_range_common) *
+    diff(accum_range_common) +
+    accum_range_common[1]
+}
+
+# ------------------------------------------------------
+# ----- Re-scale assemblage novelty for both lakes -----
+# ------------------------------------------------------
+
+# Baiau Superior:
+ba_accum_q0_pred_scaled <- ba_accum_q0_pred %>%
+  mutate(
+    fit_scaled = accum_to_d15n_common(fit),
+    lower_scaled = accum_to_d15n_common(lower),
+    upper_scaled = accum_to_d15n_common(upper)
+  )
+
+ba_fp_beta_accum_q0_scaled <- ba_fp_beta_accum_q0 %>%
+  mutate(
+    beta_q0_scaled = accum_to_d15n_common(beta_q0)
+  )
+
+# Baiau Inferior:
+bain_accum_q0_pred_scaled <- bain_accum_q0_pred %>%
+  mutate(
+    fit_scaled = accum_to_d15n_common(fit),
+    lower_scaled = accum_to_d15n_common(lower),
+    upper_scaled = accum_to_d15n_common(upper)
+  )
+
+bain_fp_beta_accum_q0_scaled <- bain_fp_beta_accum_q0 %>%
+  mutate(
+    beta_q0_scaled = accum_to_d15n_common(beta_q0)
+  )
+
+```
+
+# Plot
+
+```{r, Baiau Superior & Baiau Inferior}
+
+# ------------ Baiau Superior ------------
+
+ba_d15n_accum_overlap_plot <- ggplot() +
+  
+  # δ15N confidence interval
+  geom_ribbon(
+    data = ba_d15n_pred,
+    aes(x = mean.age, ymin = lower, ymax = upper),
+    alpha = 0.18,
+    fill = "grey60"
+  ) +
+  
+  # Assemblage novelty confidence interval, rescaled
+  geom_ribbon(
+    data = ba_accum_q0_pred_scaled,
+    aes(x = mean.age, ymin = lower_scaled, ymax = upper_scaled),
+    alpha = 0.18,
+    fill = "#EC5757"
+  ) +
+  
+  # δ15N fitted GAM
+  geom_line(
+    data = ba_d15n_pred,
+    aes(x = mean.age, y = fit),
+    linewidth = 1,
+    colour = "black"
+  ) +
+  
+  # Assemblage novelty fitted GAM, rescaled
+  geom_line(
+    data = ba_accum_q0_pred_scaled,
+    aes(x = mean.age, y = fit_scaled),
+    linewidth = 1,
+    colour = "#A70A0A"
+  ) +
+  
+  # δ15N raw points
+  geom_point(
+    data = ba_raw_df,
+    aes(x = mean.age, y = d15N),
+    size = 2,
+    alpha = 0.55,
+    colour = "black"
+  ) +
+  
+  # Assemblage novelty raw points, rescaled
+  geom_point(
+    data = ba_fp_beta_accum_q0_scaled,
+    aes(x = mean.age, y = beta_q0_scaled),
+    size = 2,
+    alpha = 0.55,
+    colour = "#A70A0A"
+  ) +
+  
+  scale_x_reverse(
+    name = "Age (cal yr BP)",
+    breaks = scales::pretty_breaks(n = 5),
+    limits = c(7600, 0),
+    expand = expansion(mult = c(0.03, 0.03))
+  ) +
+  
+  scale_y_continuous(
+  name = expression(delta^15*N~("\u2030")),
+  limits = d15n_range_common,
+  breaks = scales::pretty_breaks(n = 5),
+  expand = expansion(mult = c(0.08, 0.08)),
+  sec.axis = sec_axis(
+    trans = ~ d15n_to_accum_common(.),
+    name = "Assemblage novelty"
+  )
+) +
+  
+  labs(
+    title = "Baiau Superior"
+  ) +
+  
+  theme_bw(base_size = 13) +
+  theme(
+    aspect.ratio = 1,
+    panel.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 15),
+    axis.title.y.left = element_text(colour = "black"),
+    axis.text.y.left = element_text(colour = "black"),
+    axis.title.y.right = element_text(colour = "black"),
+    axis.text.y.right = element_text(colour = "black"),
+    plot.title = element_text(size = 18, face = "bold"),
+    axis.line = element_line(linewidth = 0.4),
+    axis.ticks = element_line(linewidth = 0.4),
+    plot.margin = margin(6, 8, 6, 8)
+  )
+
+ba_d15n_accum_overlap_plot
+
+# ------------ Baiau Inferior ------------
+
+bain_d15n_accum_overlap_plot <- ggplot() +
+  
+  # δ15N confidence interval
+  geom_ribbon(
+    data = bain_d15n_pred,
+    aes(x = mean.age, ymin = lower, ymax = upper),
+    alpha = 0.18,
+    fill = "grey60"
+  ) +
+  
+  # Assemblage novelty confidence interval, rescaled
+  geom_ribbon(
+    data = bain_accum_q0_pred_scaled,
+    aes(x = mean.age, ymin = lower_scaled, ymax = upper_scaled),
+    alpha = 0.18,
+    fill = "#EC5757"
+  ) +
+  
+  # δ15N fitted GAM
+  geom_line(
+    data = bain_d15n_pred,
+    aes(x = mean.age, y = fit),
+    linewidth = 1,
+    colour = "black"
+  ) +
+  
+  # Assemblage novelty fitted GAM, rescaled
+  geom_line(
+    data = bain_accum_q0_pred_scaled,
+    aes(x = mean.age, y = fit_scaled),
+    linewidth = 1,
+    colour = "#A70A0A"
+  ) +
+  
+  # δ15N raw points
+  geom_point(
+    data = bain_raw_df,
+    aes(x = mean.age, y = d15N),
+    size = 2,
+    alpha = 0.55,
+    colour = "black"
+  ) +
+  
+  # Assemblage novelty raw points, rescaled
+  geom_point(
+    data = bain_fp_beta_accum_q0_scaled,
+    aes(x = mean.age, y = beta_q0_scaled),
+    size = 2,
+    alpha = 0.55,
+    colour = "#A70A0A"
+  ) +
+  
+  scale_x_reverse(
+    name = "Age (cal yr BP)",
+    breaks = scales::pretty_breaks(n = 5),
+    limits = c(7600, 0),
+    expand = expansion(mult = c(0.03, 0.03))
+  ) +
+  
+  scale_y_continuous(
+  name = expression(delta^15*N~("\u2030")),
+  limits = d15n_range_common,
+  breaks = scales::pretty_breaks(n = 5),
+  expand = expansion(mult = c(0.08, 0.08)),
+  sec.axis = sec_axis(
+    trans = ~ d15n_to_accum_common(.),
+    name = "Assemblage novelty"
+  )
+) +
+  
+  labs(
+    title = "Baiau Inferior"
+  ) +
+  
+  theme_bw(base_size = 13) +
+  theme(
+    aspect.ratio = 1,
+    panel.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 15),
+    axis.title.y.left = element_text(colour = "black"),
+    axis.text.y.left = element_text(colour = "black"),
+    axis.title.y.right = element_text(colour = "black"),
+    axis.text.y.right = element_text(colour = "black"),
+    plot.title = element_text(size = 18, face = "bold"),
+    axis.line = element_line(linewidth = 0.4),
+    axis.ticks = element_line(linewidth = 0.4),
+    plot.margin = margin(6, 8, 6, 8)
+  )
+
+bain_d15n_accum_overlap_plot
+
+# ------------ Baiau Baiau Superior & Inferior ------------
+
+# Combined plot:
+baiau_d15n_assemblage_novelty <- ba_d15n_accum_overlap_plot | bain_d15n_accum_overlap_plot
+baiau_d15n_assemblage_novelty
+
+```
+
+# ---------------------------------
+## d15N vs. C/N ratio comparison ##
+# ---------------------------------
+
+# --------------- Data treatment -----------------
+
+```{r, Baiau Superior & Baiau Inferior}
+
+# Data frames:
+ba_raw_df <- read.csv("Select your directory/Unified_raw_dataframes/baiau_superior_raw_unified_data_frame.csv", sep = ";")
+bain_raw_df <- read.csv("Select your directory/Unified_raw_dataframes/baiau_inferior_raw_unified_data_frame.csv", sep = ";")
+
+# ----- Baiau Superior -----
+
+# Reduce dimension:
+ba_raw_df <- ba_raw_df %>% 
+  select(-Species_ID, -No) %>% 
+  distinct(sample, .keep_all = TRUE) %>% 
+  group_by(sample) %>% 
+  mutate(              
+    `C/N` = perc.C / perc.N        # C/N ratio calculation
+  ) %>% 
+  ungroup()
+
+# ----- Baiau Inferior -----
+
+# Reduce dimension:
+bain_raw_df <- bain_raw_df %>% 
+  select(-Species_ID, -No) %>% 
+  distinct(sample, .keep_all = TRUE) %>% 
+  group_by(sample) %>% 
+  mutate(              
+    `C/N` = perc.C / perc.N        # C/N ratio calculation
+  ) %>% 
+  ungroup()
+
+```
+
+# --------------- Combined plot -----------------
+
+# Individual plots
+
+```{r, Baiau Superior}
+
+ba.cn.d15n <- ggplot(data = ba_raw_df, aes(x = `C/N`, y = d15N, color = mean.age)) + #The previous chart.
+  geom_point(
+    colour = "black", 
+             size = 2.5, 
+             pch = 19) +
+  theme_minimal() +
+  geom_path(linewidth = 0.8) +
+  scale_color_gradient(
+    low = "#052DBB",
+    high = "#B8D3EA",
+    name = "Age (cal yr BP)"
+  ) +
+  labs(title = "Baiau Superior", 
+       x = "C/N", 
+       y = expression(delta^{15}*N~("\u2030"))
+       ) +
+  theme_bw() +
+  theme(
+    aspect.ratio = 1,
+    plot.title = element_text(size = 18, face = "bold"),
+    legend.position = "inside",
+    legend.position.inside = c(0.05, 0.05),
+    legend.justification = c(0, 0),
+    legend.background = element_blank(),
+    legend.key = element_blank(),
+    legend.box.background = element_blank(),
+    panel.grid.major = element_blank(), #Remove grid lines.
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(),
+    axis.title = element_text(size = 16), #Control for the labels of the axis.
+    axis.text = element_text(size = 15), #Control for the ticks of the axis.
+    legend.title = element_text(size = 16),  # Legend title font size
+    legend.text = element_text(size = 14),   # Legend item labels
+    legend.key.size = unit(1.2, "lines")     # Size of the legend boxes
+    )
+ 
+
+ba.cn.d15n
+
+
+```
+
+```{r, Baiau Inferior}
+
+bain.cn.d15n <- ggplot(data = bain_raw_df, aes(x = `C/N`, y = d15N, color = mean.age)) + #The previous chart.
+  geom_point(colour = "black", size = 2.5) +
+  theme_minimal() +
+  geom_path(linewidth = 0.8) +
+  scale_color_gradient(
+    low = "#052DBB",
+    high = "#B8D3EA",
+    name = "Age (cal yr BP)",
+    breaks = c(0, 1000, 3000, 5000)
+  ) +
+  labs(title = "Baiau Inferior", 
+       x = "C/N", 
+       y = expression(delta^{15}*N~("\u2030"))
+       ) +
+  theme_bw() +
+  theme(
+    aspect.ratio = 1,
+    plot.title = element_text(size = 18, face = "bold"),
+    legend.position = "inside",
+    legend.position.inside = c(0.95, 0.05),
+    legend.justification = c(1, 0),
+    legend.background = element_blank(),
+    legend.key = element_blank(),
+    legend.box.background = element_blank(),
+    panel.grid.major = element_blank(), #Remove grid lines.
+    panel.grid.minor = element_blank(),
+    panel.background = element_blank(),
+    axis.title = element_text(size = 16), #Control for the labels of the axis.
+    axis.text = element_text(size = 15), #Control for the ticks of the axis.
+    legend.title = element_text(size = 16),  # Legend title font size
+    legend.text = element_text(size = 14),   # Legend item labels
+    legend.key.size = unit(1.2, "lines")     # Size of the legend boxes
+    )
+
+bain.cn.d15n
+
+```
+
+# Merge individual plots & Unify y-axis
+
+```{r, Baiau Superior & Baiau Inferior}
+
+# Force the plot to share the same y-axis:
+shared_d15n_range <- range(
+  c(ba_raw_df$d15N, bain_raw_df$d15N),
+  na.rm = TRUE
+)
+
+# Apply the range:
+ba.cn.d15n_shared <- ba.cn.d15n +
+  coord_cartesian(ylim = shared_d15n_range)
+
+bain.cn.d15n_shared <- bain.cn.d15n +
+  coord_cartesian(ylim = shared_d15n_range)
+
+# Merge both charts:
+baiau_cn_d15n <- ba.cn.d15n_shared | bain.cn.d15n_shared
+baiau_cn_d15n
+
+```
+

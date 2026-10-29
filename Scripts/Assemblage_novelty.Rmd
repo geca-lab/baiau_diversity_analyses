@@ -1,0 +1,680 @@
+---
+title: "Assemblage_novelty"
+author: "Daniel_Martín"
+date: "2026-06-04"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+# ----------------
+## Packages ##
+# ----------------
+
+```{r}
+
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(iNEXT.beta3D)
+library(ggplot2)
+library(readr)
+
+```
+
+# ----------------------
+## Data pre-treatment ##
+# ----------------------
+
+# -------------------- Baiau Superior --------------------
+
+# Prepare sample metadata
+
+```{r}
+
+# Initial long-format data frame (raw data):
+ba_sup_raw_df <- read.csv("Select your directory/Unified_raw_dataframes/baiau_superior_raw_unified_data_frame.csv", sep = ";")
+
+# One row per sample and explicitly order samples from oldest to most recent using 'mean.age': 
+ba_sample_meta <- ba_sup_raw_df %>%
+  distinct(
+    sample,
+    location,
+    top.age,
+    mean.age,
+    bottom.age,
+    age.interval
+  ) %>%
+  arrange(desc(mean.age)) %>%   # oldest to youngest
+  mutate(
+    chrono_order = row_number()
+  )
+
+ba_sample_meta
+
+range(ba_sample_meta$mean.age, na.rm = TRUE)      # Check the ordering
+
+ba_sample_meta %>%
+  dplyr::select(sample, mean.age, top.age, bottom.age, chrono_order) %>%       # Check the head
+  head()
+
+ba_sample_meta %>%
+  dplyr::select(sample, mean.age, top.age, bottom.age, chrono_order) %>%       # Check the tail
+  tail()
+
+```
+
+# Create the species-by-sample abundance matrix
+
+```{r}
+
+# Matrix with species as rows and samples as columns, which is the format required by 'iNEXTbeta3d()':
+ba_abund_mat <- ba_sup_raw_df %>%
+  filter(
+    !is.na(Species_ID),
+    !is.na(sample),
+    !is.na(No),
+    No > 0
+  ) %>%
+  group_by(Species_ID, sample) %>%
+  summarise(No = sum(No), .groups = "drop") %>%
+  mutate(sample = paste0("sample_", sample)) %>%
+  pivot_wider(
+    names_from = sample,
+    values_from = No,
+    values_fill = 0
+  ) %>%
+  column_to_rownames("Species_ID") %>%
+  as.matrix()
+
+dim(ba_abund_mat)
+ba_abund_mat[1:5, 1:5]
+
+```
+
+# Build bottom-up focal-vs-accumulated-pool comparisons
+
+```{r}
+
+# For each focal sample, we compare:
+    # column 1: the focal sample,
+    # column 2: the accumulated pool of all older samples.
+
+# Chronologically ordered sample IDs:
+ordered_samples <- ba_sample_meta$sample
+
+# Names as they appear in 'ba_abund_mat':
+ordered_sample_cols <- paste0("sample_", ordered_samples)
+
+# Keep only samples present in the abundance matrix:
+ordered_sample_cols <- ordered_sample_cols[ordered_sample_cols %in% colnames(ba_abund_mat)]
+
+# Build bottom-up focal vs accumulated pool list:
+ba_focal_pool_list <- map(
+  2:length(ordered_sample_cols),
+  function(i) {
+    
+    focal_col <- ordered_sample_cols[i]
+    older_cols <- ordered_sample_cols[1:(i - 1)]
+    
+    focal_vec <- ba_abund_mat[, focal_col]
+    
+    accumulated_vec <- rowSums(
+      ba_abund_mat[, older_cols, drop = FALSE]
+    )
+    
+    mat <- cbind(
+      focal = focal_vec,
+      accumulated_pool = accumulated_vec
+    )
+    
+    # Remove species absent from both focal and accumulated pool
+    mat <- mat[rowSums(mat) > 0, , drop = FALSE]
+    
+    mat
+  }
+)
+
+# Name comparisons by focal sample:
+names(ba_focal_pool_list) <- ordered_sample_cols[-1]
+
+# Inspect first comparison:
+ba_focal_pool_list[[1]][1:10, ]
+
+```
+
+# Add focal-sample metadata to each comparison
+
+```{r}
+
+# This will later allow to plot beta diversity and accumulated diversity against age:
+ba_focal_pool_meta <- tibble(
+  comparison = names(ba_focal_pool_list),
+  sample = as.integer(gsub("sample_", "", comparison))
+) %>%
+  left_join(
+    ba_sample_meta,
+    by = "sample"
+  ) %>%
+  arrange(desc(mean.age))
+
+ba_focal_pool_meta
+
+```
+
+# -------------------- Baiau Inferior --------------------
+
+# Prepare sample metadata
+
+```{r}
+
+# Initial long-format data frame (raw data):
+ba_inf_raw_df <- read.csv("Select your directory/Unified_raw_dataframes/baiau_superior_raw_unified_data_frame.csv", sep = ";")
+
+# One row per sample and explicitly order samples from oldest to most recent using 'mean.age': 
+bain_sample_meta <- ba_inf_raw_df %>%
+  distinct(
+    sample,
+    location,
+    top.age,
+    mean.age,
+    bottom.age,
+    age.interval
+  ) %>%
+  arrange(desc(mean.age)) %>%   # oldest to youngest
+  mutate(
+    chrono_order = row_number()
+  )
+
+bain_sample_meta
+
+range(bain_sample_meta$mean.age, na.rm = TRUE)         # Check the ordering
+
+bain_sample_meta %>%
+  select(sample, mean.age, top.age, bottom.age, chrono_order) %>%           # Check the head
+  head()
+
+bain_sample_meta %>%
+  select(sample, mean.age, top.age, bottom.age, chrono_order) %>%           # Check the tail
+  tail()
+
+```
+
+# Create the species-by-sample abundance matrix
+
+```{r}
+
+# Matrix with species as rows and samples as columns, which is the format required by 'iNEXTbeta3d()':
+bain_abund_mat <- ba_inf_raw_df %>%
+  filter(
+    !is.na(Species_ID),
+    !is.na(sample),
+    !is.na(No),
+    No > 0
+  ) %>%
+  group_by(Species_ID, sample) %>%
+  summarise(No = sum(No), .groups = "drop") %>%
+  mutate(sample = paste0("sample_", sample)) %>%
+  pivot_wider(
+    names_from = sample,
+    values_from = No,
+    values_fill = 0
+  ) %>%
+  column_to_rownames("Species_ID") %>%
+  as.matrix()
+
+dim(bain_abund_mat)
+bain_abund_mat[1:5, 1:5]
+
+```
+
+# Build bottom-up focal-vs-accumulated-pool comparisons
+
+```{r}
+
+# For each focal sample, we compare:
+    # column 1: the focal sample,
+    # column 2: the accumulated pool of all older samples.
+
+# Chronologically ordered sample IDs:
+ordered_samples <- bain_sample_meta$sample
+
+# Names as they appear in 'bain_abund_mat':
+ordered_sample_cols <- paste0("sample_", ordered_samples)
+
+# Keep only samples present in the abundance matrix:
+ordered_sample_cols <- ordered_sample_cols[ordered_sample_cols %in% colnames(bain_abund_mat)]
+
+# Build bottom-up focal vs accumulated pool list:
+bain_focal_pool_list <- map(
+  2:length(ordered_sample_cols),
+  function(i) {
+    
+    focal_col <- ordered_sample_cols[i]
+    older_cols <- ordered_sample_cols[1:(i - 1)]
+    
+    focal_vec <- bain_abund_mat[, focal_col]
+    
+    accumulated_vec <- rowSums(
+      bain_abund_mat[, older_cols, drop = FALSE]
+    )
+    
+    mat <- cbind(
+      focal = focal_vec,
+      accumulated_pool = accumulated_vec
+    )
+    
+    # Remove species absent from both focal and accumulated pool
+    mat <- mat[rowSums(mat) > 0, , drop = FALSE]
+    
+    mat
+  }
+)
+
+# Name comparisons by focal sample:
+names(bain_focal_pool_list) <- ordered_sample_cols[-1]
+
+# Inspect first comparison:
+bain_focal_pool_list[[1]][1:10, ]
+
+```
+
+# Add focal-sample metadata to each comparison
+
+```{r}
+
+# This will later allow to plot beta diversity and accumulated diversity against age.
+
+bain_focal_pool_meta <- tibble(
+  comparison = names(bain_focal_pool_list),
+  sample = as.integer(gsub("sample_", "", comparison))
+) %>%
+  left_join(
+    bain_sample_meta,
+    by = "sample"
+  ) %>%
+  arrange(desc(mean.age))
+
+bain_focal_pool_meta
+
+```
+
+# ----------------------
+## Assemblage Novelty ##
+# ----------------------
+
+# -------------------- Baiau Superior --------------------
+
+# Sample coverage & Beta calculation
+
+```{r}
+
+# Check sample coverage with 'DataInfobeta3D()':
+ba_fp_info <- DataInfobeta3D(                      # Sample coverage of each comparison
+  data = ba_focal_pool_list,
+  diversity = "TD",
+  datatype = "abundance"
+)
+
+head(ba_fp_info)
+
+ba_fp_info %>%                                    # Check coverage values
+  select(Assemblage, n, S.obs, `SC(2n)`) %>%
+  head(20)
+
+# Choose a common coverage level:
+ba_fp_joint_cov <- ba_fp_info %>%                 
+  filter(Assemblage == "Joint assemblage")
+
+ba_min_cov <- min(ba_fp_joint_cov$`SC(2n)`, na.rm = TRUE)     # The min among the joint assemblages
+
+ba_min_cov
+
+# Beta diversity calculation:
+ba_fp_inext_q0 <- iNEXTbeta3D(
+  data = ba_focal_pool_list,
+  q = 0,
+  datatype = "abundance",
+  diversity = "TD",
+  base = "coverage",
+  level = 0.98,
+  nboot = 500
+)
+
+# Inspect the output:
+str(ba_fp_inext_q0, max.level = 2)
+
+names(ba_fp_inext_q0[[1]])
+
+ba_fp_inext_q0[[1]]
+
+map(ba_fp_inext_q0[1:3], names)
+ba_fp_inext_q0[[1]]$beta
+
+# Extract beta diversity estimates:
+ba_fp_beta_q0 <- imap_dfr(
+  ba_fp_inext_q0,
+  function(x, nm) {
+    
+    x$beta %>%
+      as_tibble() %>%
+      mutate(comparison = nm)
+  }
+)
+
+ba_fp_beta_q0
+names(ba_fp_beta_q0)
+
+# Helper to extract beta values (another way, supposedly safer):
+extract_inext_beta <- function(inext_object, meta_df, beta_name = "beta_q0") {
+  
+  beta_raw <- imap_dfr(
+    inext_object,
+    function(x, nm) {
+      
+      if (!"beta" %in% names(x)) {
+        stop("No element named 'beta' found in the iNEXTbeta3D output. Inspect names(inext_object[[1]]).")
+      }
+      
+      x$beta %>%
+        as_tibble() %>%
+        mutate(comparison = nm)
+    }
+  )
+  
+  possible_estimate_cols <- c(
+    "qD",
+    "Estimate",
+    "est",
+    "TD",
+    "Beta",
+    "beta",
+    "qD.Beta"
+  )
+  
+  estimate_col <- intersect(possible_estimate_cols, names(beta_raw))[1]
+  
+  if (is.na(estimate_col)) {
+    stop(
+      paste(
+        "Could not automatically identify the beta estimate column.",
+        "Available columns are:",
+        paste(names(beta_raw), collapse = ", ")
+      )
+    )
+  }
+  
+  beta_clean <- beta_raw %>%
+    left_join(meta_df, by = "comparison") %>%
+    rename(
+      !!beta_name := all_of(estimate_col)
+    )
+  
+  beta_clean
+}
+
+ba_fp_beta_q0_clean <- extract_inext_beta(
+  inext_object = ba_fp_inext_q0,
+  meta_df = ba_focal_pool_meta,
+  beta_name = "beta_q0"
+)
+
+
+```
+
+# Calculate accumulated diversity of the bottom-up pool
+
+```{r}
+
+# We calculated the accumulated diversity of the historical pool itself. For each focal sample, the accumulated pool is all older samples.
+
+# Raw accumulated richness of the bottom-up pool:
+ba_accumulated_div <- map_dfr(
+  2:length(ordered_sample_cols),
+  function(i) {
+    
+    focal_col <- ordered_sample_cols[i]
+    older_cols <- ordered_sample_cols[1:(i - 1)]
+    
+    accumulated_vec <- rowSums(
+      ba_abund_mat[, older_cols, drop = FALSE]
+    )
+    
+    tibble(
+      comparison = focal_col,
+      sample = as.integer(gsub("sample_", "", focal_col)),
+      accumulated_richness_raw = sum(accumulated_vec > 0),
+      accumulated_abundance = sum(accumulated_vec),
+      n_older_samples = length(older_cols)
+    )
+  }
+) %>%
+  left_join(
+    ba_sample_meta,
+    by = "sample"
+  ) %>%
+  arrange(desc(mean.age))
+
+ba_accumulated_div
+
+```
+
+# Join beta diversity and accumulated richness
+
+```{r}
+
+ba_fp_beta_accum_q0 <- ba_fp_beta_q0_clean %>%
+  left_join(
+    ba_accumulated_div %>%
+      select(
+        comparison,
+        accumulated_richness_raw,
+        accumulated_abundance,
+        n_older_samples
+      ),
+    by = "comparison"
+  )
+
+ba_fp_beta_accum_q0 %>%
+  select(
+    comparison,
+    sample,
+    mean.age,
+    beta_q0,
+    accumulated_richness_raw,
+    accumulated_abundance,
+    n_older_samples
+  ) %>%
+  head()
+
+
+```
+
+# -------------------- Baiau Inferior --------------------
+
+# Sample coverage & Beta calculation
+
+```{r}
+
+# Check sample coverage with 'DataInfobeta3D()':
+bain_fp_info <- DataInfobeta3D(                      # Sample coverage of each comparison
+  data = bain_focal_pool_list,
+  diversity = "TD",
+  datatype = "abundance"
+)
+
+head(bain_fp_info)
+
+bain_fp_info %>%                                    # Check coverage values
+  select(Assemblage, n, S.obs, `SC(2n)`) %>%
+  head(20)
+
+# Choose a common coverage level:
+bain_fp_joint_cov <- bain_fp_info %>%                 
+  filter(Assemblage == "Joint assemblage")
+
+bain_min_cov <- min(bain_fp_joint_cov$`SC(2n)`, na.rm = TRUE)     # The min among the joint assemblages
+
+bain_min_cov
+
+# Beta diversity calculation:
+bain_fp_inext_q0 <- iNEXTbeta3D(
+  data = bain_focal_pool_list,
+  q = 0,
+  datatype = "abundance",
+  diversity = "TD",
+  base = "coverage",
+  level = 0.99,
+  nboot = 500
+)
+
+# Inspect the output:
+str(bain_fp_inext_q0, max.level = 2)
+
+names(bain_fp_inext_q0[[1]])
+
+bain_fp_inext_q0[[1]]
+
+map(bain_fp_inext_q0[1:3], names)
+bain_fp_inext_q0[[1]]$beta
+
+# Extract beta diversity estimates:
+bain_fp_beta_q0 <- imap_dfr(
+  bain_fp_inext_q0,
+  function(x, nm) {
+    
+    x$beta %>%
+      as_tibble() %>%
+      mutate(comparison = nm)
+  }
+)
+
+bain_fp_beta_q0
+names(bain_fp_beta_q0)
+
+# Helper to extract beta values (another way, supposedly safer):
+extract_inext_beta <- function(inext_object, meta_df, beta_name = "beta_q0") {
+  
+  beta_raw <- imap_dfr(
+    inext_object,
+    function(x, nm) {
+      
+      if (!"beta" %in% names(x)) {
+        stop("No element named 'beta' found in the iNEXTbeta3D output. Inspect names(inext_object[[1]]).")
+      }
+      
+      x$beta %>%
+        as_tibble() %>%
+        mutate(comparison = nm)
+    }
+  )
+  
+  possible_estimate_cols <- c(
+    "qD",
+    "Estimate",
+    "est",
+    "TD",
+    "Beta",
+    "beta",
+    "qD.Beta"
+  )
+  
+  estimate_col <- intersect(possible_estimate_cols, names(beta_raw))[1]
+  
+  if (is.na(estimate_col)) {
+    stop(
+      paste(
+        "Could not automatically identify the beta estimate column.",
+        "Available columns are:",
+        paste(names(beta_raw), collapse = ", ")
+      )
+    )
+  }
+  
+  beta_clean <- beta_raw %>%
+    left_join(meta_df, by = "comparison") %>%
+    rename(
+      !!beta_name := all_of(estimate_col)
+    )
+  
+  beta_clean
+}
+
+bain_fp_beta_q0_clean <- extract_inext_beta(
+  inext_object = bain_fp_inext_q0,
+  meta_df = bain_focal_pool_meta,
+  beta_name = "beta_q0"
+)
+
+```
+
+# Calculate accumulated diversity of the bottom-up pool
+
+```{r}
+
+# We calculated the accumulated diversity of the historical pool itself. For each focal sample, the accumulated pool is all older samples.
+
+# Raw accumulated richness of the bottom-up pool:
+bain_accumulated_div <- map_dfr(
+  2:length(ordered_sample_cols),
+  function(i) {
+    
+    focal_col <- ordered_sample_cols[i]
+    older_cols <- ordered_sample_cols[1:(i - 1)]
+    
+    accumulated_vec <- rowSums(
+      bain_abund_mat[, older_cols, drop = FALSE]
+    )
+    
+    tibble(
+      comparison = focal_col,
+      sample = as.integer(gsub("sample_", "", focal_col)),
+      accumulated_richness_raw = sum(accumulated_vec > 0),
+      accumulated_abundance = sum(accumulated_vec),
+      n_older_samples = length(older_cols)
+    )
+  }
+) %>%
+  left_join(
+    bain_sample_meta,
+    by = "sample"
+  ) %>%
+  arrange(desc(mean.age))
+
+bain_accumulated_div
+
+```
+
+# Join beta diversity and accumulated richness
+
+```{r}
+
+bain_fp_beta_accum_q0 <- bain_fp_beta_q0_clean %>%
+  left_join(
+    bain_accumulated_div %>%
+      select(
+        comparison,
+        accumulated_richness_raw,
+        accumulated_abundance,
+        n_older_samples
+      ),
+    by = "comparison"
+  )
+
+bain_fp_beta_accum_q0 %>%
+  select(
+    comparison,
+    sample,
+    mean.age,
+    beta_q0,
+    accumulated_richness_raw,
+    accumulated_abundance,
+    n_older_samples
+  ) %>%
+  head()
+
+```
+
+
+

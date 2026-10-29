@@ -1,0 +1,95 @@
+---
+title: "Taxa_harmonisation"
+author: "Daniel_Martín"
+date: "2026-09-29"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+----------------
+## Packages ##
+----------------
+
+```{r, message = FALSE}
+
+library(readxl)
+library(dplyr)
+
+```
+
+--------------------------------------------
+## Raw data & reference taxa list ##
+--------------------------------------------
+
+# ---------- Baiau Superior -----------
+
+# Dataframes
+
+```{r}
+
+# Raw counts:
+ba21_raw_counts <- read_excel("Select your directory/Raw_count_data/BA21_counts.xlsx")
+
+# Reference taxa list:
+ba21_taxa_reference <- read_excel("Select your directory/Raw_count_data/BA21_spp_reference.xlsx")
+
+```
+
+# Harmonisation
+
+```{r}
+
+# Merge both dataframes:
+ba21_ID_merged <- merge(ba21_raw_counts, ba21_taxa_reference[, c("ID_count", "Species_ID")], 
+                         by.x = "ID_count", 
+                         by.y = "ID_count", 
+                         all.x = TRUE) # Keep all columns of the first dataframe
+
+# Summarise morphotypes:
+ba21_counts <- ba21_ID_merged %>%
+  group_by(ID_sample, sample, Species_ID) %>% 
+  summarise(No = sum(No)) %>% 
+  ungroup() %>% 
+  select(-ID_sample) %>% 
+  mutate(sample = as.numeric(as.character(sample))) %>%
+  arrange(sample)
+
+
+```
+
+# ---------- Baiau Inferior -----------
+
+# Dataframes
+
+```{r}
+
+# Raw counts:
+bain21_raw_counts <- read_excel("Select your directory/Raw_count_data/BAIN21_counts.xlsx")
+
+# Reference taxa list:
+bain21_taxa_reference <- read_excel("Select your directory/Raw_count_data/BAIN21_spp_reference.xlsx")
+
+```
+
+# Harmonisation
+
+```{r}
+
+# Merge both dataframes:
+bain21_ID_merged <- merge(bain21_raw_counts, bain21_taxa_reference[, c("ID_count", "Species_ID")], 
+                         by.x = "ID_count", 
+                         by.y = "ID_count", 
+                         all.x = TRUE) # Keep all columns of the first dataframe
+
+# Summarise morphotypes:
+bain21_counts <- bain21_ID_merged %>%
+  group_by(ID_sample, sample, Species_ID) %>% 
+  summarise(No = sum(No)) %>% 
+  ungroup() %>% 
+  select(-ID_sample) %>% 
+  mutate(sample = as.numeric(as.character(sample))) %>%
+  arrange(sample)
+
+```
+

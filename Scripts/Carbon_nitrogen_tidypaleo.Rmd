@@ -1,0 +1,199 @@
+---
+title: "Carbon_nitrogen_bulk_sediment"
+author: "Daniel_Martín"
+date: "2026-09-30"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+# ----------------
+## Packages ##
+# ----------------
+
+```{r, message = FALSE}
+
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(tidypaleo)
+
+```
+
+# ------- Baiau Superior --------
+
+```{r, Pre-treatment}
+
+# Initial long-format data frame (raw data):
+ba_sup_raw_df <- read.csv("Select your directory/Unified_raw_dataframes/baiau_superior_raw_unified_data_frame.csv", sep = ";")
+
+# Isotope dataframe:
+ba_iso <- ba_sup_raw_df %>%
+    distinct(sample, .keep_all = TRUE) %>% 
+    select(sample, top.depth, mean.depth, bottom.depth, top.age, mean.age, bottom.age, age.interval, median.age, up.age.CI, low.age.CI, water.cont, density, perc.C, perc.N, d15N, d13C)
+
+#'C/N' ratio:
+ba_iso <- ba_iso %>% 
+  group_by(sample) %>% 
+  mutate('C/N' = perc.C/perc.N) %>% 
+  ungroup()
+
+ba_iso <- ba_iso %>% 
+  mutate(
+    "Carbon (%)" = perc.C,
+    "Nitrogen (%)" = perc.N
+  ) %>% 
+  select(-perc.C, -perc.N)
+
+# Into long format:
+ba_iso_long <- ba_iso %>%
+  pivot_longer(cols = d15N:"Nitrogen (%)", names_to = "param", values_to = "values") %>% #To create the columns "param" & "values".
+  arrange(param)
+
+```
+
+# Tidyplot
+
+```{r}
+
+# Without ages:
+ba.iso.plot <- ba_iso_long %>% 
+  ggplot(aes(x = values, y = mean.depth)) +
+  geom_lineh() + 
+  geom_point() +
+  scale_y_reverse(
+  breaks = scales::pretty_breaks(n = 12)  #More breaks accross the y-axis.
+) +
+  facet_geochem_gridh(vars(param), scales = "free") +
+  labs(x = NULL, y = "Depth (cm)", title = "Baiau Superior") +
+  theme_bw() +
+  theme(
+    panel.background = element_blank(), #Remove panel background.
+    panel.grid.major = element_blank(), #Remove major gridlines.
+    panel.grid.minor = element_blank(), #Remove minor gridlines.
+    plot.title = element_text(size = 20, face = "bold", hjust = 0),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    strip.text.x = element_text(size = 12),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12)
+  )
+
+ba.iso.plot
+
+# --------- Adding the age -----------
+
+# Dataframes with the ages (generated with rbacon package for the subsampling resolution):
+ba21_ages <- read.csv("Select your directory/Ages_tidypalo/ba_ages_tidypaleo.csv", header = TRUE, sep = ";")
+
+# Baiau Superior's age model:
+ba_age_depth <- age_depth_model(.data = ba21_ages, #Nombre de la dataframe con las profundidades y las edades
+                         depth = ba21_ages$depth, #Nombre de la columna de profundidades
+                         age = ba21_ages$mean, #Nombre de la columna de edades medias
+                         age_min = ba21_ages$min, #Nombre de la columna de error mínimo
+                         age_max = ba21_ages$max #Nombre de la columna de error máximo
+                         )
+
+ba.iso.plot.age <- ba.iso.plot + scale_y_depth_age(ba_age_depth, age_name   = "Age (cal yr BP)",
+
+    # Primary y (depth):
+    trans        = "reverse",                     # replaces scale_y_reverse()
+    breaks       = scales::pretty_breaks(n = 12),      # major ticks every 10 cm
+
+    # Secondary y (age) – optional:
+    age_breaks   = seq(0, 7600, by = 1000)       # adjust to your range
+  )
+
+ba.iso.plot.age
+
+```
+
+# ------- Baiau Inferior --------
+
+```{r, Pre-treatment}
+
+# Initial long-format data frame (raw data):
+ba_inf_raw_df <- read.csv("Select your directory/Unified_raw_dataframes/baiau_inferior_raw_unified_data_frame.csv", sep = ";")
+
+# Isotope dataframe:
+bain_iso <- ba_inf_raw_df %>%
+    distinct(sample, .keep_all = TRUE) %>% 
+    select(sample, top.depth, mean.depth, bottom.depth, top.age, mean.age, bottom.age, age.interval, median.age, up.age.CI, low.age.CI, water.cont, density, perc.C, perc.N, d15N, d13C)
+
+#'C/N' ratio:
+bain_iso <- bain_iso %>% 
+  group_by(sample) %>% 
+  mutate('C/N' = perc.C/perc.N) %>% 
+  ungroup()
+
+bain_iso <- bain_iso %>% 
+  mutate(
+    "Carbon (%)" = perc.C,
+    "Nitrogen (%)" = perc.N
+  ) %>% 
+  select(-perc.C, -perc.N)
+
+# Into long format:
+bain_iso_long <- bain_iso %>%
+  pivot_longer(cols = d15N:"Nitrogen (%)", names_to = "param", values_to = "values") %>% #To create the columns "param" & "values".
+  arrange(param)
+
+```
+
+# Tidyplot
+
+```{r}
+
+# Without ages:
+bain.iso.plot <- bain_iso_long %>% 
+  ggplot(aes(x = values, y = mean.depth)) +
+  geom_lineh() + 
+  geom_point() +
+  scale_y_reverse(
+  breaks = scales::pretty_breaks(n = 12)  #More breaks accross the y-axis.
+) +
+  facet_geochem_gridh(vars(param), scales = "free") +
+  labs(x = NULL, y = "Depth (cm)", title = "Baiau Inferior") +
+  theme_bw() +
+  theme(
+    panel.background = element_blank(), #Remove panel background.
+    panel.grid.major = element_blank(), #Remove major gridlines.
+    panel.grid.minor = element_blank(), #Remove minor gridlines.
+    plot.title = element_text(size = 20, face = "bold", hjust = 0),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    strip.text.x = element_text(size = 12),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12)
+  )
+
+bain.iso.plot
+
+# --------- Adding the age -----------
+
+# Dataframes with the ages (generated with rbacon package for the subsampling resolution):
+bain21_ages <- read.csv("Select your directory/Ages_tidypaleo/bain_ages_tidypaleo.csv", header = TRUE, sep = ";")
+
+# Baiau Superior's age model:
+bain_age_depth <- age_depth_model(.data = bain21_ages, #Nombre de la dataframe con las profundidades y las edades
+                         depth = bain21_ages$depth, #Nombre de la columna de profundidades
+                         age = bain21_ages$mean, #Nombre de la columna de edades medias
+                         age_min = bain21_ages$min, #Nombre de la columna de error mínimo
+                         age_max = bain21_ages$max #Nombre de la columna de error máximo
+                         )
+
+bain.iso.plot.age <- bain.iso.plot + scale_y_depth_age(bain_age_depth, age_name   = "Age (cal yr BP)",
+
+    # Primary y (depth):
+    trans        = "reverse",                     # replaces scale_y_reverse()
+    breaks       = scales::pretty_breaks(n = 12),      # major ticks every 10 cm
+
+    # Secondary y (age) – optional:
+    age_breaks   = seq(0, 5700, by = 1000)       # adjust to your range
+  )
+
+bain.iso.plot.age
+
+```
+

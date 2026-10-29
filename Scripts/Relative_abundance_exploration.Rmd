@@ -1,0 +1,1388 @@
+---
+title: "Fig. 6a, b"
+author: "Daniel_Martín"
+date: "2026-06-16"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+# ----------------
+## Packages ##
+# ----------------
+
+```{r, message=FALSE}
+
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(forcats)
+library(ggplot2)
+library(ggridges)
+library(patchwork)
+library(qgam)
+library(quantreg)
+
+```
+
+# -------------------------------------------------------------------------
+## Fig. 6a: Changes between the abundant and rare taxa in Baiau Superior ##
+# -------------------------------------------------------------------------
+
+# ------------------ The whole species inventory ------------------
+
+# How many species persist, appear and disappear after the threshold?
+
+```{r}
+
+# ---------- Settings -----------
+
+ecotone_sample <- 83
+rel_threshold <- 2   # Only used later to distinguish abundant vs rare taxa
+
+species_period_presence <- ba_rel %>%
+  inner_join(period_samples, by = "sample") %>%
+  group_by(Species_ID, period) %>%
+  summarise(
+    total_abundance = sum(No, na.rm = TRUE),
+    mean_rel_abundance = mean(rel_abundance, na.rm = TRUE),
+    n_occurrences = n_distinct(sample),
+    .groups = "drop"
+  ) %>%
+  mutate(present = total_abundance > 0) %>%
+  select(Species_ID, period, present, total_abundance, mean_rel_abundance, n_occurrences)
+
+# Define periods using the whole record:
+period_samples_full <- ba_rel %>%
+  distinct(sample) %>%
+  mutate(
+    period = case_when(
+      sample <= ecotone_sample ~ "post",
+      sample > ecotone_sample  ~ "pre"
+    )
+  )
+
+# Classify all species:
+species_turnover_status_full <- ba_rel %>%
+  inner_join(period_samples_full, by = "sample") %>%
+  group_by(Species_ID, period) %>%
+  summarise(
+    total_valves = sum(No, na.rm = TRUE),
+    n_occurrences = n_distinct(sample),
+    mean_rel_abundance = mean(rel_abundance, na.rm = TRUE),
+    max_rel_abundance = max(rel_abundance, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    present = total_valves > 0
+  ) %>%
+  select(
+    Species_ID,
+    period,
+    present,
+    total_valves,
+    n_occurrences,
+    mean_rel_abundance,
+    max_rel_abundance
+  ) %>%
+  pivot_wider(
+    names_from = period,
+    values_from = c(
+      present,
+      total_valves,
+      n_occurrences,
+      mean_rel_abundance,
+      max_rel_abundance
+    ),
+    values_fill = list(
+      present = FALSE,
+      total_valves = 0,
+      n_occurrences = 0,
+      mean_rel_abundance = 0,
+      max_rel_abundance = 0
+    )
+  ) %>%
+  mutate(
+    status = case_when(
+      present_pre  == TRUE  & present_post == TRUE  ~ "Persisted",
+      present_pre  == TRUE  & present_post == FALSE ~ "Disappeared",
+      present_pre  == FALSE & present_post == TRUE  ~ "Novel"
+    ),
+    
+    max_rel_abundance_overall = pmax(
+      max_rel_abundance_pre,
+      max_rel_abundance_post,
+      na.rm = TRUE
+    ),
+    
+    abundance_class = if_else(
+      max_rel_abundance_overall >= rel_threshold,
+      "Reached ≥2% at least once",
+      "Always <2%"
+    )
+  )
+
+# Summarise everything:
+species_turnover_summary_full <- species_turnover_status_full %>%
+  count(status, name = "n_species") %>%
+  mutate(
+    proportion_of_total = n_species / sum(n_species)
+  )
+
+species_turnover_summary_full
+
+```
+
+# ------------------ Abundant species (>=2% rel. abundance) ------------------
+
+# Data treatment
+
+```{r}
+
+# ------------------- Starting data frame ----------------------------
+
+# Initial long-format data frame (raw data):
+ba_sup_raw_df <- read.csv("Select your directory/Raw_unified_data_frames/baiau_superior_raw_unified_data_frame.csv", sep = ";")
+
+# ------------------- User settings ----------------------------
+
+ecotone_sample <- 83   # Sample threshold (mean age = 2327 cal yr BP)
+rel_threshold <- 2     # Species kept if they reach >= 2% in at least one sample
+pseudocount <- 0.02    # Avoids division by zero in ratios
+ln10 <- log(10)
+
+# ------------------- Relative abundances & Filtering ----------------------------
+
+# Species data frame:
+ba.spp.df <- subset(ba_sup_raw_df, select = c(1, 3:4)) 
+
+# Relative abundances:
+ba_rel <- ba.spp.df %>%
+  filter(
+    !is.na(sample),
+    !is.na(Species_ID),
+    !is.na(No),
+    No > 0
+  ) %>%
+  group_by(sample, Species_ID) %>%
+  summarise(
+    No = sum(No, na.rm = TRUE),
+    across(any_of(c("mean.age", "top.age", "bottom.age", "age.interval")), first),
+    .groups = "drop"
+  ) %>%
+  group_by(sample) %>%
+  mutate(
+    rel_abundance = 100 * No / sum(No, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+# How many species identified in total?
+total_species <- n_distinct(ba_rel$Species_ID)
+total_species 
+
+# Keep only species reaching >= 2% once (abundant):
+abundant_species <- ba_rel %>%
+  group_by(Species_ID) %>%
+  summarise(
+    max_rel_abundance = max(rel_abundance, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(max_rel_abundance >= rel_threshold) %>%
+  pull(Species_ID)
+
+length(abundant_species)
+
+# Complete the sample x species matrix with zeros (absences as zeros): avoids inflating relative abundances!
+all_samples <- sort(unique(ba_rel$sample))
+
+ba_abundant_complete <- ba_rel %>%
+  filter(Species_ID %in% abundant_species) %>%
+  select(sample, Species_ID, rel_abundance) %>%
+  complete(
+    sample = all_samples,
+    Species_ID = abundant_species,
+    fill = list(rel_abundance = 0)
+  ) %>%
+  arrange(sample, Species_ID)
+
+# ------------------- Define balanced pre- and post-ecotone periods ----------------------------
+
+# This way we avoid comparing two different periods!
+
+post_samples_all <- all_samples[all_samples <= ecotone_sample]
+pre_samples_all  <- all_samples[all_samples > ecotone_sample]
+
+n_post_all <- length(post_samples_all)
+n_pre_all  <- length(pre_samples_all)
+
+n_balanced <- min(n_post_all, n_pre_all)
+
+# Use the samples closest to the threshold on both sides
+post_samples <- post_samples_all %>%
+  sort() %>%
+  tail(n_balanced)
+
+pre_samples <- pre_samples_all %>%
+  sort() %>%
+  head(n_balanced)
+
+period_samples <- tibble(
+  sample = c(pre_samples, post_samples),
+  period = c(
+    rep("pre",  length(pre_samples)),
+    rep("post", length(post_samples))
+  )
+)
+
+cat(
+  "Ecotone sample:", ecotone_sample, "\n",
+  "All post-threshold samples:", n_post_all, "\n",
+  "All pre-threshold samples:", n_pre_all, "\n",
+  "Balanced samples per period:", n_balanced, "\n",
+  "Post samples used:", min(post_samples), "-", max(post_samples), "\n",
+  "Pre samples used:", min(pre_samples), "-", max(pre_samples), "\n"
+)
+
+# Summarise mean relative abundance per species and period:
+ba_period <- ba_abundant_complete %>%
+  inner_join(period_samples, by = "sample") %>%
+  group_by(Species_ID, period) %>%
+  summarise(
+    mean_rel_abundance = mean(rel_abundance),      # Mean across all selected samples, including zero values when the species was absent
+    sd_rel_abundance   = sd(rel_abundance),
+    n_samples          = n(),
+    se_rel_abundance   = sd_rel_abundance / sqrt(n_samples),
+    n_occurrences      = sum(rel_abundance > 0),
+    .groups = "drop"
+  )
+
+# Compute post/pre log-ratios:
+ba_ratio <- ba_period %>%
+  pivot_wider(
+    names_from = period,
+    values_from = c(
+      mean_rel_abundance,
+      sd_rel_abundance,
+      se_rel_abundance,
+      n_samples,
+      n_occurrences
+    ),
+    names_glue = "{.value}_{period}"
+  ) %>%
+  mutate(
+    mean_pre_pc  = mean_rel_abundance_pre  + pseudocount,
+    mean_post_pc = mean_rel_abundance_post + pseudocount,
+    
+    ratio = mean_post_pc / mean_pre_pc,
+    log_ratio = log10(ratio),
+    
+    se_log_ratio = sqrt(
+      (se_rel_abundance_post / (mean_post_pc * ln10))^2 +
+        (se_rel_abundance_pre / (mean_pre_pc * ln10))^2
+    ),
+    
+    status = case_when(
+      mean_rel_abundance_pre == 0  & mean_rel_abundance_post > 0 ~ "New",
+      mean_rel_abundance_pre > 0   & mean_rel_abundance_post == 0 ~ "Declining",
+      TRUE ~ "Shared"
+    )
+  ) %>%
+  arrange(log_ratio) %>%
+  mutate(
+    Species_ID = factor(Species_ID, levels = Species_ID)
+  )
+
+```
+
+# Plot 
+
+```{r}
+
+# Plot showing abundant species:
+ba_ecotone_ratios_labelled <- ggplot(
+  ba_ratio,
+  aes(
+    x = log_ratio,
+    y = reorder(Species_ID, log_ratio),
+    color = status,
+    shape = status
+  )
+) +
+  geom_errorbarh(
+    aes(
+      xmin = log_ratio - se_log_ratio,
+      xmax = log_ratio + se_log_ratio
+    ),
+    height = 0.2,
+    linewidth = 0.4
+  ) +
+  geom_point(size = 3, stroke = 0.9) +
+  geom_vline(
+    xintercept = 0,
+    linetype = "dashed",
+    color = "red"
+  ) +
+  scale_color_manual(
+    values = c(
+      New = "blue",
+      Declining = "red",
+      Shared = "black"
+    )
+  ) +
+  scale_shape_manual(
+    values = c(
+      New = 1,
+      Declining = 1,
+      Shared = 16
+    )
+  ) +
+  guides(
+    color = guide_legend(override.aes = list(size = 5))
+  ) +
+  theme_bw() +
+  theme(
+    aspect.ratio = 1,
+    panel.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title = element_text(size = 22),
+    axis.text.x = element_text(size = 13),
+    axis.text.y = element_text(size = 13, face = "italic")    
+  ) +
+  labs(
+    x = "log10 ratio (post/pre)",
+    y = "Diatom species",
+    color = "Status",
+    shape = "Status"
+  )
+
+ba_ecotone_ratios_labelled
+
+
+```
+
+# ------------------ Rare species (<2% rel. abundance) ------------------
+
+# Data treatment
+
+```{r, Data preparation for plotting}
+
+# ------------------- Starting data frame ----------------------------
+
+# Initial long-format data frame (raw data):
+ba_sup_raw_df <- read.csv("Select your directory/Raw_unified_data_frames/baiau_superior_raw_unified_data_frame.csv", sep = ";")
+
+# ------------------- User settings ----------------------------
+
+ecotone_sample <- 83   # Sample threshold (mean age = 2327 cal yr BP)
+rel_threshold <- 2     
+pseudocount <- 0.02    # Avoids division by zero in ratios
+ln10 <- log(10)
+
+# ------------------- Relative abundances & Filtering ----------------------------
+
+# Species data frame:
+ba.spp.df <- subset(ba_sup_raw_df, select = c(1, 3:4)) 
+
+# Relative abundances:
+ba_rel <- ba.spp.df %>%
+  filter(
+    !is.na(sample),
+    !is.na(Species_ID),
+    !is.na(No),
+    No > 0
+  ) %>%
+  group_by(sample, Species_ID) %>%
+  summarise(
+    No = sum(No, na.rm = TRUE),
+    across(any_of(c("mean.age", "top.age", "bottom.age", "age.interval")), first),
+    .groups = "drop"
+  ) %>%
+  group_by(sample) %>%
+  mutate(
+    rel_abundance = 100 * No / sum(No, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+# How many species identified in total?
+total_species <- n_distinct(ba_rel$Species_ID)
+total_species   # Result = 275!
+
+# Keep only species reaching >= 2% once (abundant):
+rare_species <- ba_rel %>%
+  group_by(Species_ID) %>%
+  summarise(
+    max_rel_abundance = max(rel_abundance, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(max_rel_abundance < rel_threshold) %>%
+  pull(Species_ID)
+
+length(rare_species)
+
+# Complete rare species x selected samples with zeros:
+ba_rare_complete <- ba_rel %>%
+  filter(
+    Species_ID %in% rare_species,
+    sample %in% period_samples$sample
+  ) %>%
+  select(sample, Species_ID, rel_abundance) %>%
+  complete(
+    sample = period_samples$sample,
+    Species_ID = rare_species,
+    fill = list(rel_abundance = 0)
+  ) %>%
+  left_join(period_samples, by = "sample") %>%
+  arrange(sample, Species_ID)
+
+# ------------------- Define balanced pre- and post-ecotone periods ----------------------------
+
+all_samples <- sort(unique(ba_rel$sample))
+
+post_samples_all <- all_samples[all_samples <= ecotone_sample]
+pre_samples_all  <- all_samples[all_samples > ecotone_sample]
+
+n_post_all <- length(post_samples_all)
+n_pre_all  <- length(pre_samples_all)
+
+n_balanced <- min(n_post_all, n_pre_all)
+
+# Samples closest to the threshold on both sides
+post_samples <- post_samples_all %>%
+  sort() %>%
+  tail(n_balanced)
+
+pre_samples <- pre_samples_all %>%
+  sort() %>%
+  head(n_balanced)
+
+period_samples <- tibble(
+  sample = c(pre_samples, post_samples),
+  period = c(
+    rep("pre",  length(pre_samples)),
+    rep("post", length(post_samples))
+  )
+)
+
+cat(
+  "Ecotone sample:", ecotone_sample, "\n",
+  "Available post-threshold samples:", n_post_all, "\n",
+  "Available pre-threshold samples:", n_pre_all, "\n",
+  "Samples used per period:", n_balanced, "\n",
+  "Post samples used:", min(post_samples), "-", max(post_samples), "\n",
+  "Pre samples used:", min(pre_samples), "-", max(pre_samples), "\n"
+)
+
+# Summarise mean relative abundance per species and period:
+ba_rare_period <- ba_rare_complete %>%
+  group_by(Species_ID, period) %>%
+  summarise(
+    mean.rel.abundance = mean(rel_abundance),
+    sd.rel.abundance   = sd(rel_abundance),
+    n                  = n(),
+    se.rel.abundance   = sd.rel.abundance / sqrt(n),
+    n_occurrences      = sum(rel_abundance > 0),
+    .groups = "drop"
+  )
+
+# Compute post/pre log-ratios:
+ba_rare_ratio <- ba_rare_period %>%
+  pivot_wider(
+    names_from = period,
+    values_from = c(
+      mean.rel.abundance,
+      sd.rel.abundance,
+      se.rel.abundance,
+      n,
+      n_occurrences
+    ),
+    names_glue = "{.value}_{period}",
+    values_fill = list(
+      mean.rel.abundance = 0,
+      sd.rel.abundance = 0,
+      se.rel.abundance = 0,
+      n_occurrences = 0
+    )
+  ) %>%
+  # Remove species absent from both selected comparison windows: avoids producing an artificial log-ratio of zero!
+  filter(n_occurrences_pre + n_occurrences_post > 0) %>%
+  mutate(
+    mean.pre.pc  = mean.rel.abundance_pre  + pseudocount,
+    mean.post.pc = mean.rel.abundance_post + pseudocount,
+    
+    ratio = mean.post.pc / mean.pre.pc,
+    log.ratio = log10(ratio),
+    
+    se.log.ratio = sqrt(
+      (se.rel.abundance_post / (mean.post.pc * ln10))^2 +
+        (se.rel.abundance_pre / (mean.pre.pc * ln10))^2
+    ),
+    
+    status = case_when(
+      mean.rel.abundance_pre == 0  & mean.rel.abundance_post > 0 ~ "New",
+      mean.rel.abundance_pre > 0   & mean.rel.abundance_post == 0 ~ "Declining",
+      TRUE ~ "Shared"
+    )
+  ) %>%
+  arrange(log.ratio) %>%
+  mutate(
+    Species_ID = factor(Species_ID, levels = Species_ID)
+  )
+
+```
+
+# Plot
+
+```{r}
+
+# Plot showing rare species:
+ba_ecotone_ratios_rare <- ggplot(
+  ba_rare_ratio %>%
+    mutate(status = factor(status, levels = c("New", "Declining", "Shared"))),
+  aes(
+    x = log.ratio,
+    y = reorder(Species_ID, log.ratio),
+    color = status,
+    shape = status
+  )
+) +
+  geom_errorbarh(
+    aes(
+      xmin = log.ratio - se.log.ratio,
+      xmax = log.ratio + se.log.ratio
+    ),
+    height = 0.2,
+    linewidth = 0.4,
+    show.legend = FALSE
+  ) +
+  geom_point(size = 2, stroke = 0.9) +
+  geom_vline(
+    xintercept = 0,
+    linetype = "dashed",
+    color = "red"
+  ) +
+  scale_color_manual(
+    values = c(
+      New = "blue",
+      Declining = "red",
+      Shared = "black"
+    ),
+    drop = FALSE
+  ) +
+  scale_shape_manual(
+    values = c(
+      New = 1,
+      Declining = 1,
+      Shared = 16
+    ),
+    drop = FALSE
+  ) +
+  guides(
+    shape = "none",
+    color = guide_legend(
+      override.aes = list(
+        shape = c(1, 1, 16),
+        size = 4,
+        stroke = 0.9
+      )
+    )
+  ) +
+  theme_bw() +
+  theme(
+    aspect.ratio = 1,
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank(),
+    panel.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5),
+    legend.title = element_text(size = 16),
+    legend.text = element_text(size = 14)
+  ) +
+  labs(
+    x = NULL,
+    y = NULL,
+    title = "Change in mean relative abundance between periods",
+    color = "Status"
+  )
+
+ba_ecotone_ratios_rare
+
+```
+
+# ------------------------------------------------------------------------
+## Fig. 6b: Temporal changes in the distribution of relative abundances ##
+# ------------------------------------------------------------------------
+
+# -------- Baiau Superior ---------
+
+# Quantile regression calculation
+
+```{r, Define quantiles, fit the models, check the models}
+
+# Raw data frame for Baiau Superior:
+ba_raw_df <- read.csv("Select your directory/Raw_unified_data_frames/baiau_superior_raw_unified_data_frame.csv", sep = ";")
+
+# Compute relative abundances & modify the data frame:
+ba_relative_abundances <- ba_raw_df %>% 
+  dplyr::select(
+    location,
+    sample,
+    mean.age,
+    Species_ID,
+    No
+  ) %>% 
+  dplyr::group_by(         # Compute relative abundances within each sample
+    location, 
+    sample,
+    mean.age
+  ) %>% 
+  dplyr::mutate(
+    total_count = sum(No, na.rm = TRUE),
+    relative_abundance = 100 * No / total_count
+  ) %>% 
+  ungroup()
+
+# -------- Smooth quantile regression --------
+
+ba_qr_data <- ba_relative_abundances %>%
+  mutate(
+    age_kyr = mean.age / 1000
+  )
+
+# Define quantiles:
+ba_quantile_def <- tibble(
+  qu = c(0.60, 0.80, 0.95, 0.99),
+  quantile_label = factor(
+    c("0.60", "0.80", "0.95", "0.99"),
+    levels = c("0.60", "0.80", "0.95", "0.99")
+  )
+)
+
+# Fit one smooth model for each quantile:
+ba_quantile_models <- ba_quantile_def %>%
+  mutate(
+    model = map(
+      qu,
+      ~ qgam(
+        relative_abundance ~ s(age_kyr, k = 10),
+        data = ba_qr_data,
+        qu = .x
+      )
+    )
+  )
+
+
+# -------- Checking the models --------
+
+# Check the output:
+for (i in seq_len(nrow(ba_quantile_models))) {
+  
+  cat(
+    "\n\n============================\n",
+    "Quantile:", ba_quantile_models$qu[i],
+    "\n============================\n"
+  )
+  
+  qgam::check(
+    ba_quantile_models$model[[i]],
+    pch = 16,
+    cex = 0.3
+  )
+}
+
+# Extract diagnostic as a table:
+ba_quantile_diagnostics <- ba_quantile_models %>%
+  transmute(
+    qu,
+
+    convergence = map_chr(
+      model,
+      ~ {
+        value <- .x$outer.info$conv
+
+        if (is.null(value)) {
+          NA_character_
+        } else {
+          as.character(value)
+        }
+      }
+    ),
+
+    max_abs_gradient = map_dbl(
+      model,
+      ~ {
+        value <- .x$outer.info$grad
+
+        if (is.null(value)) {
+          NA_real_
+        } else {
+          max(abs(value), na.rm = TRUE)
+        }
+      }
+    ),
+
+    min_hessian_eigenvalue = map_dbl(
+      model,
+      ~ {
+        hessian <- .x$outer.info$hess
+
+        if (is.null(hessian)) {
+          NA_real_
+        } else {
+          min(
+            eigen(
+              hessian,
+              symmetric = TRUE,
+              only.values = TRUE
+            )$values
+          )
+        }
+      }
+    ),
+
+    actual_proportion_below = map_dbl(
+      model,
+      ~ mean(
+        .x$y <= fitted(.x),
+        na.rm = TRUE
+      )
+    ),
+
+    model_rank = map_int(
+      model,
+      ~ .x$rank
+    ),
+
+    number_coefficients = map_int(
+      model,
+      ~ length(coef(.x))
+    ),
+
+    edf = map_dbl(
+      model,
+      ~ summary(.x)$s.table[1, "edf"]
+    )
+  )
+
+ba_quantile_diagnostics
+
+# It should be:
+  # Convergence = Full convergence;
+  # small absolute gradient;
+  # a positive minimum Hessian eigenvalue;
+  # model_rank == number_coefficients;
+  # actual_proportion_below close to the requested qu;
+  # edf not very close to the maximum possible value. 
+
+
+# Refit the models (if needed):
+ba_q60_bfgs <- qgam(                         # Quantile 0.60
+  relative_abundance ~ s(age_kyr, k = 6),
+  data = ba_qr_data,
+  qu = 0.60,
+  argGam = list(
+    method = "REML",
+    optimizer = c("outer", "bfgs"),
+    control = mgcv::gam.control(maxit = 300)
+  )
+)
+
+qgam::check(ba_q60_bfgs)   # The model worked
+
+ba_q95_bfgs_k5 <- qgam(                      # Quantile 0.95
+  relative_abundance ~ s(age_kyr, k = 5),
+  data = ba_qr_data,
+  qu = 0.95,
+  argGam = list(
+    method = "REML",
+    optimizer = c("outer", "bfgs"),
+    control = mgcv::gam.control(maxit = 300)
+  )
+)
+
+qgam::check(ba_q95_bfgs_k5)   # The model worked
+
+ba_q99_bfgs_k5 <- qgam(                      # Quantile 0.99
+  relative_abundance ~ s(age_kyr, k = 5, bs = "cr"),
+  data = ba_qr_data,
+  qu = 0.99,
+  argGam = list(
+    method = "REML",
+    optimizer = c("outer", "bfgs"),
+    control = mgcv::gam.control(maxit = 300)
+  )
+)
+
+qgam::check(ba_q99_bfgs_k5)   # The model worked
+
+
+# -------- Replace the models (if any) --------
+
+ba_quantile_models$model[[which(ba_quantile_models$qu == 0.60)]] <- ba_q60_bfgs
+ba_quantile_models$model[[which(ba_quantile_models$qu == 0.95)]] <- ba_q95_bfgs_k5
+ba_quantile_models$model[[which(ba_quantile_models$qu == 0.99)]] <- ba_q99_bfgs_k5
+
+
+# -------- Get parameters from the models --------
+
+# Function to extract statistics from the models and quantiles:
+extract_qgam_stats <- function(model) {
+  
+  sm <- summary(model)
+  
+  tibble(
+    edf = sm$s.table[1, "edf"],
+    deviance_explained = 100 * sm$dev.expl
+  )
+}
+
+# Get the parameters:
+ba_quantile_results <- ba_quantile_models %>%
+  mutate(
+    statistics = map(model, extract_qgam_stats)
+  ) %>%
+  select(qu, quantile_label, statistics) %>%
+  unnest(statistics)
+
+ba_quantile_results
+
+```
+
+# Individual plot
+
+```{r}
+
+# ------ Define the plotmath labels -------
+
+quantile_breaks <- c("0.60", "0.80", "0.95", "0.99")  
+quantile_plotmath_labels <- expression(
+  tau == 0.60,
+  tau == 0.80,
+  tau == 0.95,
+  tau == 0.99
+)
+
+quantile_cols <- c(
+  "0.60" = "#E90BF5",
+  "0.80" = "#090FDC",
+  "0.95" = "#13A408",
+  "0.99" = "#b2182b"
+)
+
+
+# ------ Generate predictions -------
+
+age_grid <- tibble(
+  age_kyr = seq(
+    min(ba_qr_data$age_kyr, na.rm = TRUE),
+    max(ba_qr_data$age_kyr, na.rm = TRUE),
+    length.out = 400
+  )
+)
+
+# ------ Plot the quantile trajectories -------
+
+# Logarithmic y-axis:
+ba_quantile_predictions <- ba_quantile_models %>%     # For the logarithmic plot
+  mutate(
+    prediction = map(
+      model,
+      function(current_model) {
+
+        pred <- predict(
+          current_model,
+          newdata = age_grid,
+          se = TRUE
+        )
+
+        age_grid %>%
+          mutate(
+            fit = as.numeric(pred$fit),
+            se = as.numeric(pred$se.fit),
+            lower = pmax(0.2, fit - 1.96 * se),   # Avoid 0 for the logarithmic scale
+            upper = fit + 1.96 * se
+          )
+      }
+    )
+  ) %>%
+  select(qu, quantile_label, prediction) %>%
+  unnest(prediction)
+
+
+ba_quantile_abundance_log_plot <- ggplot() +
+
+  # Raw taxon-level observations
+  geom_point(
+    data = ba_qr_data,
+    aes(
+      x = age_kyr,
+      y = relative_abundance
+    ),
+    alpha = 0.4,
+    size = 0.5,
+    colour = "grey40"
+  ) +
+
+  # Uncertainty around quantile trajectories
+  geom_ribbon(
+    data = ba_quantile_predictions,
+    aes(
+      x = age_kyr,
+      ymin = lower,
+      ymax = upper,
+      fill = quantile_label
+    ),
+    alpha = 0.15,
+    colour = NA
+  ) +
+
+  # Quantile trajectories
+  geom_line(
+    data = ba_quantile_predictions,
+    aes(
+      x = age_kyr,
+      y = fit,
+      colour = quantile_label
+    ),
+    linewidth = 1.1
+  ) +
+  
+  scale_colour_manual(
+    values = quantile_cols,
+    breaks = quantile_breaks,
+    labels = quantile_plotmath_labels,
+    name = "Conditional quantile",
+    drop = FALSE
+  ) +
+  
+  scale_fill_manual(
+    values = quantile_cols,
+    breaks = quantile_breaks,
+    labels = quantile_plotmath_labels,
+    name = "Conditional quantile",
+    drop = FALSE
+  ) +
+
+  scale_x_reverse(
+    breaks = 0:7,
+    labels = function(x) x * 1000     # Show the age in yr instead of kyr
+  ) +
+
+  scale_y_log10(
+    limits = c(0.2, 55),
+    breaks = c(0.2, 0.5, 1, 2, 5, 10, 20, 50),
+    labels = scales::label_number(accuracy = 0.1)
+  ) +
+
+  labs(
+    x = "Age (cal yr BP)",
+    y = "Species relative abundance (%) (log-scale)",
+    colour = "Conditional quantile",
+    fill = "Conditional quantile",
+    title = "Baiau Superior"
+    #subtitle = "Smooth conditional quantile trajectories"
+  ) +
+
+  theme_bw() +
+
+  theme(
+    aspect.ratio = 1,
+    panel.background = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    plot.title = element_text(size = 18, face = "bold"),
+    axis.text = element_text(size = 15),
+    axis.title = element_text(size = 16),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 11)
+  )
+
+ba_quantile_abundance_log_plot
+
+
+```
+
+# -------- Baiau Inferior ---------
+
+# Quantile regression calculation
+
+```{r, Define quantiles, fit the models, check the models}
+
+# Raw data frame for Baiau Superior:
+bain_raw_df <- read.csv("Select your directory/Raw_unified_data_frames/baiau_inferior_raw_unified_data_frame.csv", sep = ";")
+
+# Compute relative abundances & modify the data frame:
+bain_relative_abundances <- bain_raw_df %>% 
+  dplyr::select(
+    location,
+    sample,
+    mean.age,
+    Species_ID,
+    No
+  ) %>% 
+  dplyr::group_by(         # Compute relative abundances within each sample
+    location, 
+    sample,
+    mean.age
+  ) %>% 
+  dplyr::mutate(
+    total_count = sum(No, na.rm = TRUE),
+    relative_abundance = 100 * No / total_count
+  ) %>% 
+  ungroup()
+
+# -------- Smooth quantile regression --------
+
+bain_qr_data <- bain_relative_abundances %>%
+  mutate(
+    age_kyr = mean.age / 1000
+  )
+
+# Define quantiles:
+bain_quantile_def <- tibble(
+  qu = c(0.60, 0.80, 0.95, 0.99),
+  quantile_label = factor(
+    c("0.60", "0.80", "0.95", "0.99"),
+    levels = c("0.60", "0.80", "0.95", "0.99")
+  )
+)
+
+# Fit one smooth model for each quantile:
+bain_quantile_models <- bain_quantile_def %>%
+  mutate(
+    model = map(
+      qu,
+      ~ qgam(
+        relative_abundance ~ s(age_kyr, k = 10),
+        data = bain_qr_data,
+        qu = .x
+      )
+    )
+  )
+
+
+# -------- Checking the models --------
+
+# Check the output:
+purrr::walk2(
+  bain_quantile_models$model,
+  bain_quantile_models$qu,
+  function(model, quantile) {
+
+    cat(
+      "\n\n============================\n",
+      "Quantile:", quantile,
+      "\n============================\n"
+    )
+
+    qgam::check(
+      model,
+      pch = 16,
+      cex = 0.3
+    )
+  }
+)
+
+# Extract diagnostic as a table:
+bain_quantile_diagnostics <- bain_quantile_models %>%
+  transmute(
+    qu,
+
+    convergence = map_chr(
+      model,
+      ~ {
+        value <- .x$outer.info$conv
+
+        if (is.null(value)) {
+          NA_character_
+        } else {
+          as.character(value)
+        }
+      }
+    ),
+
+    max_abs_gradient = map_dbl(
+      model,
+      ~ {
+        value <- .x$outer.info$grad
+
+        if (is.null(value)) {
+          NA_real_
+        } else {
+          max(abs(value), na.rm = TRUE)
+        }
+      }
+    ),
+
+    min_hessian_eigenvalue = map_dbl(
+      model,
+      ~ {
+        hessian <- .x$outer.info$hess
+
+        if (is.null(hessian)) {
+          NA_real_
+        } else {
+          min(
+            eigen(
+              hessian,
+              symmetric = TRUE,
+              only.values = TRUE
+            )$values
+          )
+        }
+      }
+    ),
+
+    actual_proportion_below = map_dbl(
+      model,
+      ~ mean(
+        .x$y <= fitted(.x),
+        na.rm = TRUE
+      )
+    ),
+
+    model_rank = map_int(
+      model,
+      ~ .x$rank
+    ),
+
+    number_coefficients = map_int(
+      model,
+      ~ length(coef(.x))
+    ),
+
+    edf = map_dbl(
+      model,
+      ~ summary(.x)$s.table[1, "edf"]
+    )
+  )
+
+bain_quantile_diagnostics
+
+# It should be:
+  # Convergence = Full convergence;
+  # small absolute gradient;
+  # a positive minimum Hessian eigenvalue;
+  # model_rank == number_coefficients;
+  # actual_proportion_below close to the requested qu;
+  # edf not very close to the maximum possible value. 
+
+# No model is refitted!
+
+# -------- Get parameters from the models --------
+
+# Function to extract statistics from the models and quantiles:
+extract_qgam_stats <- function(model) {
+  
+  sm <- summary(model)
+  
+  tibble(
+    edf = sm$s.table[1, "edf"],
+    deviance_explained = 100 * sm$dev.expl
+  )
+}
+
+# Get the parameters:
+bain_quantile_results <- bain_quantile_models %>%
+  mutate(
+    statistics = map(model, extract_qgam_stats)
+  ) %>%
+  select(qu, quantile_label, statistics) %>%
+  unnest(statistics)
+
+bain_quantile_results
+
+```
+
+# Individual plot
+
+```{r}
+
+# ------ Define the plotmath labels -------
+
+quantile_breaks <- c("0.60", "0.80", "0.95", "0.99")  
+quantile_plotmath_labels <- expression(
+  tau == 0.60,
+  tau == 0.80,
+  tau == 0.95,
+  tau == 0.99
+)
+
+quantile_cols <- c(
+  "0.60" = "#E90BF5",
+  "0.80" = "#090FDC",
+  "0.95" = "#13A408",
+  "0.99" = "#b2182b"
+)
+
+
+# ------ Generate predictions -------
+
+age_grid <- tibble(
+  age_kyr = seq(
+    min(bain_qr_data$age_kyr, na.rm = TRUE),
+    max(bain_qr_data$age_kyr, na.rm = TRUE),
+    length.out = 400
+  )
+)
+
+
+# ------ Plot the quantile trajectories -------
+
+# Logarithmic y-axis:
+bain_quantile_predictions <- bain_quantile_models %>%     # For the logarithmic plot
+  mutate(
+    prediction = map(
+      model,
+      function(current_model) {
+
+        pred <- predict(
+          current_model,
+          newdata = age_grid,
+          se = TRUE
+        )
+
+        age_grid %>%
+          mutate(
+            fit = as.numeric(pred$fit),
+            se = as.numeric(pred$se.fit),
+            lower = pmax(0.2, fit - 1.96 * se),   # Avoid 0 for the logarithmic scale
+            upper = fit + 1.96 * se
+          )
+      }
+    )
+  ) %>%
+  select(qu, quantile_label, prediction) %>%
+  unnest(prediction)
+
+
+bain_quantile_abundance_log_plot <- ggplot() +
+
+  # Raw taxon-level observations
+  geom_point(
+    data = bain_qr_data,
+    aes(
+      x = age_kyr,
+      y = relative_abundance
+    ),
+    alpha = 0.4,
+    size = 0.5,
+    colour = "grey40"
+  ) +
+
+  # Uncertainty around quantile trajectories
+  geom_ribbon(
+    data = bain_quantile_predictions,
+    aes(
+      x = age_kyr,
+      ymin = lower,
+      ymax = upper,
+      fill = quantile_label
+    ),
+    alpha = 0.15,
+    colour = NA
+  ) +
+
+  # Quantile trajectories
+  geom_line(
+    data = bain_quantile_predictions,
+    aes(
+      x = age_kyr,
+      y = fit,
+      colour = quantile_label
+    ),
+    linewidth = 1.1
+  ) +
+  
+  scale_colour_manual(
+    values = quantile_cols,
+    breaks = quantile_breaks,
+    labels = quantile_plotmath_labels,
+    name = "Conditional quantile",
+    drop = FALSE
+  ) +
+  
+  scale_fill_manual(
+    values = quantile_cols,
+    breaks = quantile_breaks,
+    labels = quantile_plotmath_labels,
+    name = "Conditional quantile",
+    drop = FALSE
+  ) +
+
+  scale_x_reverse(
+    breaks = 0:7,
+    labels = function(x) x * 1000     # Show the age in yr instead of kyr
+  ) +
+
+  scale_y_log10(
+    limits = c(0.2, 55),
+    breaks = c(0.2, 0.5, 1, 2, 5, 10, 20, 50),
+    labels = scales::label_number(accuracy = 0.1)
+  ) +
+
+  labs(
+    x = "Age (cal yr BP)",
+    y = "Species relative abundance (%) (log scale)",
+    colour = "Conditional quantile",
+    fill = "Conditional quantile",
+    title = "Baiau Inferior"
+    #subtitle = "Smooth conditional quantile trajectories"
+  ) +
+
+  theme_bw() +
+
+  theme(
+    aspect.ratio = 1,
+    panel.background = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    plot.title = element_text(size = 18, face = "bold"),
+    axis.text = element_text(size = 15),
+    axis.title = element_text(size = 16),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 11)
+  )
+
+bain_quantile_abundance_log_plot
+
+
+```
+
+# -------- Baiau Superior & Baiau Inferior ---------
+
+# Repots from the models
+
+```{r}
+
+# ------- Parameters from the models -------
+
+# Combine both results:
+quantile_results_all <- bind_rows(
+  ba_quantile_results %>%
+    mutate(lake = "Baiau Superior"),
+  
+  bain_quantile_results %>%
+    mutate(lake = "Baiau Inferior")
+) %>%
+  select(lake, everything())
+
+quantile_results_all
+
+```
+
+# Combined plot
+
+```{r}
+
+# Combined plot for both lakes:
+baiau_quantile_abundance_log_plot <- (ba_quantile_abundance_log_plot | bain_quantile_abundance_log_plot) +
+  plot_layout(guides = "collect") & theme(legend.position = "bottom")
+baiau_quantile_abundance_log_plot
+
+```
+
